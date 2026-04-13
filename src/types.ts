@@ -4,6 +4,9 @@ export const BACKLOG_IMPLEMENTATION_RUNNER_ROLES = ['taskUi', 'taskCode'] as con
 export type BacklogImplementationRunnerRole = typeof BACKLOG_IMPLEMENTATION_RUNNER_ROLES[number];
 export const BACKLOG_RUNNER_ROLES = [...BACKLOG_IMPLEMENTATION_RUNNER_ROLES, 'planner'] as const;
 export type BacklogRunnerRole = typeof BACKLOG_RUNNER_ROLES[number];
+export const BACKLOG_PUBLIC_AGENT_ROLES = ['planner', 'ui', 'code'] as const;
+export type BacklogPublicAgentRole = typeof BACKLOG_PUBLIC_AGENT_ROLES[number];
+export type BacklogConfigPreset = 'safe' | 'balanced' | 'aggressive';
 export type BacklogTaskPriority = 'high' | 'normal' | 'low';
 export type BacklogTaskState = 'planned' | 'ready' | 'done' | 'failed' | 'superseded';
 export type BacklogTaskKind = 'implementation' | 'research';
@@ -41,7 +44,7 @@ export interface BacklogPassConfigInput {
   kind: BacklogPassKind;
   enabled?: boolean;
   description?: string;
-  promptFile: string;
+  promptFile?: string;
   runner?: BacklogPassRunnerConfig;
   heuristics?: BacklogPassHeuristicsInput;
 }
@@ -56,48 +59,83 @@ export interface BacklogPassConfig {
   heuristics: BacklogPassHeuristics;
 }
 
+export type BacklogValidationConfigInput =
+  | string
+  | {
+      default: string;
+      profiles?: Record<string, string>;
+      routing?: ValidationProfileRule[];
+    };
+
+export type BacklogProviderSelectionInput =
+  | BacklogTool
+  | 'auto'
+  | {
+      tool?: BacklogTool | 'auto';
+      model?: string;
+    };
+
+export interface BacklogDiscoveryPassInput {
+  enabled?: boolean;
+  description?: string;
+  promptFile?: string;
+  runner?: BacklogPassRunnerConfig;
+  heuristics?: BacklogPassHeuristicsInput;
+}
+
 export interface BacklogRunnerConfigInput {
+  preset?: BacklogConfigPreset;
   projectRoot?: string;
-  files: {
-    backlog: string;
-    candidateQueue: string;
+  paths?: {
+    backlog?: string;
+    backlogDir?: string;
+    candidateQueue?: string;
     candidateRejectLog?: string;
     taskSpecsDir?: string;
-    stop: string;
+    stopFile?: string;
     runtimeReport?: string;
-    patterns: string;
-    progress: string;
+    scriptsDir?: string;
+    patterns?: string;
+    progress?: string;
     stateDb?: string;
     models?: string;
     runnerLogDir?: string;
     runtimeDir?: string;
     locksDir?: string;
   };
-  prompts: {
-    agent: string;
+  prompts?: {
+    agent?: string;
     planner?: string;
   };
-  validationCommand: string;
-  validationProfiles?: Record<string, string>;
-  heuristics?: {
+  validation?: BacklogValidationConfigInput;
+  classification?: {
     backlogRuntimePaths?: string[];
     uiPathPrefixes?: string[];
-    validationProfileRules?: ValidationProfileRule[];
   };
+  providers?:
+    | BacklogTool
+    | 'auto'
+    | {
+        default?: BacklogTool | 'auto';
+        agents?: Partial<Record<BacklogPublicAgentRole, BacklogProviderSelectionInput>>;
+      };
   workspaceBootstrap?: {
     installCommand?: string;
     repairCommand?: string;
   };
-  runners: Record<BacklogRunnerRole, {
-    tool: BacklogTool;
-    model?: string;
-  }>;
-  defaults?: {
+  workspace?: {
     workers?: number;
-    passes?: boolean;
-    worktrees?: boolean;
+    useWorktrees?: boolean;
   };
-  passes?: Record<string, BacklogPassConfigInput>;
+  discovery?: {
+    enabled?: boolean;
+    promptDir?: string;
+    defaults?: {
+      runner?: BacklogPassRunnerConfig;
+      heuristics?: BacklogPassHeuristicsInput;
+    };
+    passes?: Record<string, BacklogDiscoveryPassInput>;
+  };
 }
 
 export interface BacklogRunnerConfig {
@@ -141,6 +179,13 @@ export interface BacklogRunnerConfig {
     passes: boolean;
     worktrees: boolean;
   };
+  discovery: {
+    promptDir: string;
+    defaults: {
+      runner?: BacklogPassRunnerConfig;
+      heuristics: BacklogPassHeuristics;
+    };
+  };
   passes: Record<string, BacklogPassConfig>;
 }
 
@@ -183,6 +228,11 @@ export interface AgentResult {
   rawError: string;
 }
 
+export interface AgentContextPayload {
+  prefix: string;
+  tail: string;
+}
+
 export type AgentProgressEvent =
   | {
       type: 'raw-line';
@@ -199,6 +249,8 @@ export interface AgentRunRequest {
   tool: BacklogTool;
   model?: string;
   context: string;
+  contextPrefix?: string;
+  contextTail?: string;
   prompt: string;
   cwd: string;
   maxTurns?: number;
@@ -290,6 +342,7 @@ export type BacklogCandidateSource =
 
 export interface BacklogCandidateRecord {
   title: string;
+  taskKind: BacklogTaskKind;
   priority: BacklogTaskPriority;
   touchPaths: string[];
   acceptanceCriteria: string[];

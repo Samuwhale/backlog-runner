@@ -52,6 +52,7 @@ type CandidateRejectLogEntry = {
   raw_line: string;
   candidate?: {
     title: string;
+    task_kind?: string;
     priority: string;
     touch_paths: string[];
     acceptance_criteria: string[];
@@ -530,9 +531,11 @@ export class FileBackedTaskStore implements BacklogStore {
     await withLock(this.backlogLock, 30, async () => {
       await appendFile(this.config.files.candidateQueue, `${JSON.stringify({
         title: candidate.title,
+        task_kind: candidate.taskKind,
         priority: candidate.priority,
         touch_paths: candidate.touchPaths,
         acceptance_criteria: candidate.acceptanceCriteria,
+        execution_domain: candidate.executionDomain,
         validation_profile: candidate.validationProfile,
         capabilities: candidate.capabilities,
         context: candidate.context,
@@ -588,6 +591,7 @@ export class FileBackedTaskStore implements BacklogStore {
             raw_line: line,
             candidate: {
               title: candidate.title,
+              task_kind: candidate.taskKind,
               priority: candidate.priority,
               touch_paths: candidate.touchPaths,
               acceptance_criteria: candidate.acceptanceCriteria,
@@ -610,6 +614,7 @@ export class FileBackedTaskStore implements BacklogStore {
             raw_line: line,
             candidate: {
               title: candidate.title,
+              task_kind: candidate.taskKind,
               priority: candidate.priority,
               touch_paths: candidate.touchPaths,
               acceptance_criteria: candidate.acceptanceCriteria,

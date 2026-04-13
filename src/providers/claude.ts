@@ -15,9 +15,8 @@ import {
 const PROVIDER_SMOKE_TIMEOUT_MS = 2 * 60 * 1000;
 const PROVIDER_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
-// Context is injected via --append-system-prompt-file, separating it from the user prompt.
-// This differs from the Codex provider which concatenates context into the user prompt
-// (Codex does not support system prompt files).
+// Keep only the stable orchestration contract in the system prompt. Repo/task payloads stay in
+// the user message so generated or repo-derived text does not gain system-level priority.
 export const claudeProvider: ProviderAdapter = {
   tool: 'claude',
   async validate(commandRunner: CommandRunner, options: ProviderValidationOptions = {}): Promise<ToolValidationResult> {
@@ -78,7 +77,16 @@ export const claudeProvider: ProviderAdapter = {
   },
   async run(commandRunner, request: AgentRunRequest) {
     return withTempDir('backlog-claude-', async dir => {
-      const contextFile = await writeTempFile(dir, 'context.md', request.context);
+      const contextFile = await writeTempFile(
+        dir,
+        'context.md',
+        request.contextPrefix ?? '',
+      );
+      const mergedInput = [
+        request.prompt,
+        request.contextTail,
+        !request.contextPrefix && !request.contextTail ? request.context : undefined,
+      ].filter(Boolean).join('\n\n');
       const args = [
         '--dangerously-skip-permissions',
         '--print',
@@ -99,7 +107,7 @@ export const claudeProvider: ProviderAdapter = {
         args,
         {
           cwd: request.cwd,
-          input: request.prompt,
+          input: mergedInput,
           timeoutMs: PROVIDER_RUN_TIMEOUT_MS,
           ignoreFailure: true,
         },

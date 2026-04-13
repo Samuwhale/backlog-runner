@@ -162,12 +162,14 @@ function buildPassPrompt(passId: string, description: string | undefined, heuris
     '',
     '## Candidate Output Rules',
     '- Emit standalone work items only.',
+    '- Set `task_kind` to `implementation` or `research`.',
     '- Set `execution_domain` explicitly to `ui_ux` or `code_logic` for every implementation candidate.',
+    '- Set `execution_domain` to `null` for research candidates.',
     '- Use `source` exactly as shown below, with this pass id.',
     '- Do not modify backlog.md directly.',
     '',
     'Schema:',
-    `{"title":"Standalone backlog item title","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context","source":{"type":"pass","pass_id":"${passId}"}}`,
+    `{"title":"Standalone backlog item title","task_kind":"implementation|research","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic|null","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context","source":{"type":"pass","pass_id":"${passId}"}}`,
     '',
     '## Return Format',
     `{"status":"done","item":"${passId}-pass","note":"<N items written to candidate queue>"}`,
@@ -193,7 +195,7 @@ function backlogScaffoldGuide(): string {
     '## How to customize passes',
     '',
     '1. Run `backlog-runner setup --agentic` if you want an agent to draft the initial pass set from the current repo.',
-    '2. Edit `backlog.config.mjs` to tune pass ids, enablement, runners, and heuristics.',
+    '2. Edit `backlog.config.mjs` to tune validation, workspace settings, provider selection, and discovery passes.',
     '3. Edit `scripts/backlog/passes/<pass-id>.md` to define what each discovery pass should look for and how it should write candidates.',
     '4. Use `backlog-runner pass add <id>` / `remove` / `enable` / `disable` for lightweight pass management.',
     '',
@@ -334,89 +336,60 @@ export function recommendDiscoveryPasses(analysis: RepoAnalysis): DiscoveryPassD
 
 function baseConfigInput(): BacklogRunnerConfigInput {
   return {
-    projectRoot: '.',
-    files: {
-      backlog: './backlog.md',
-      candidateQueue: './backlog/inbox.jsonl',
-      candidateRejectLog: './.backlog-runner/candidate-rejections.jsonl',
-      taskSpecsDir: './backlog/tasks',
-      stop: './backlog-stop',
-      runtimeReport: './.backlog-runner/runtime-report.md',
-      patterns: './scripts/backlog/patterns.md',
-      progress: './scripts/backlog/progress.txt',
-      stateDb: './.backlog-runner/state.sqlite',
-      models: './scripts/backlog/models.json',
-      runnerLogDir: './.backlog-runner/logs',
-      runtimeDir: './.backlog-runner',
-    },
-    prompts: {
-      agent: './scripts/backlog/agent.md',
-      planner: './scripts/backlog/planner.md',
-    },
-    validationCommand: 'bash scripts/backlog/validate.sh',
-    validationProfiles: {
-      repo: 'bash scripts/backlog/validate.sh',
-    },
-    heuristics: {
-      backlogRuntimePaths: ['backlog/', '.backlog-runner/', 'scripts/backlog/'],
-      uiPathPrefixes: ['src/ui/', 'src/components/', 'src/routes/', 'src/pages/', 'app/', 'apps/web/', 'frontend/', 'web/'],
-      validationProfileRules: [],
-    },
+    preset: 'balanced',
+    validation: 'bash scripts/backlog/validate.sh',
     workspaceBootstrap: {
       repairCommand: 'backlog-runner doctor --repair',
     },
-    runners: {
-      taskUi: { tool: 'claude', model: 'claude-opus-4-6' },
-      taskCode: { tool: 'codex', model: 'gpt-5.4' },
-      planner: { tool: 'codex', model: 'gpt-5.4' },
-    },
-    defaults: {
+    workspace: {
       workers: 2,
-      passes: true,
-      worktrees: true,
+      useWorktrees: true,
     },
-    passes: {},
+    discovery: {
+      enabled: true,
+      passes: {},
+    },
   };
 }
 
 function mergeBaseConfig(projectRoot: string, existing: BacklogRunnerConfig | null, passes: DiscoveryPassDraft[]): BacklogRunnerConfig {
-  const input = existing
-    ? {
-        projectRoot: existing.projectRoot,
-        files: existing.files,
-        prompts: existing.prompts,
-        validationCommand: existing.validationCommand,
-        validationProfiles: existing.validationProfiles,
-        heuristics: existing.heuristics,
-        workspaceBootstrap: existing.workspaceBootstrap,
-        runners: existing.runners,
-        defaults: existing.defaults,
-        passes: Object.fromEntries(
-          passes.map(pass => [pass.id, {
-            kind: 'discovery',
-            enabled: pass.enabled,
-            description: pass.description,
-            promptFile: pass.promptFile,
-            runner: pass.runner,
-            heuristics: pass.heuristics,
-          } satisfies BacklogPassConfigInput]),
-        ),
-      }
-    : {
-        ...baseConfigInput(),
-        projectRoot,
-        passes: Object.fromEntries(
-          passes.map(pass => [pass.id, {
-            kind: 'discovery',
-            enabled: pass.enabled,
-            description: pass.description,
-            promptFile: pass.promptFile,
-            runner: pass.runner,
-            heuristics: pass.heuristics,
-          } satisfies BacklogPassConfigInput]),
-        ),
-      };
-  return normalizeBacklogRunnerConfig(input, path.join(projectRoot, 'backlog.config.mjs'));
+  if (existing) {
+    return {
+      ...existing,
+      passes: Object.fromEntries(
+        passes.map(pass => [pass.id, {
+          id: pass.id,
+          kind: 'discovery',
+          enabled: pass.enabled,
+          description: pass.description,
+          promptFile: pass.promptFile,
+          runner: pass.runner,
+          heuristics: {
+            includePaths: [...(pass.heuristics?.includePaths ?? [])],
+            excludePaths: [...(pass.heuristics?.excludePaths ?? [])],
+            capabilities: [...(pass.heuristics?.capabilities ?? [])],
+          },
+        }]),
+      ),
+    };
+  }
+
+  return normalizeBacklogRunnerConfig({
+    ...baseConfigInput(),
+    projectRoot,
+    discovery: {
+      enabled: true,
+      passes: Object.fromEntries(
+        passes.map(pass => [pass.id, {
+          enabled: pass.enabled,
+          description: pass.description,
+          promptFile: pass.promptFile,
+          runner: pass.runner,
+          heuristics: pass.heuristics,
+        }]),
+      ),
+    },
+  }, path.join(projectRoot, 'backlog.config.mjs'));
 }
 
 function starterValidateScript(): string {
@@ -425,7 +398,7 @@ function starterValidateScript(): string {
     'set -euo pipefail',
     '',
     'echo "backlog-runner starter validation command"',
-    'echo "Replace scripts/backlog/validate.sh and validationProfiles in backlog.config.mjs with your repo-specific checks."',
+    'echo "Replace the validation command in backlog.config.mjs with your repo-specific checks."',
     '',
   ].join('\n');
 }

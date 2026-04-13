@@ -1,23 +1,47 @@
 import path from 'node:path';
-import { plannerBatchSize, plannerContextForTasks } from './planner.js';
+import { buildContextPayload } from './context-cache.js';
+import { plannerBatchSize } from './planner.js';
 import { inspectTaskSpecStore, taskSort } from './task-specs.js';
-import type { BacklogRunnerConfig, BacklogTaskClaim, BacklogTaskSpec, TaskDependencySnapshot, TaskReservationSnapshot } from './types.js';
-import { readFileIfExists } from './utils.js';
+import type {
+  AgentContextPayload,
+  BacklogRunnerConfig,
+  BacklogTaskClaim,
+  BacklogTaskSpec,
+  TaskDependencySnapshot,
+  TaskReservationSnapshot,
+} from './types.js';
+import { normalizeWhitespace, readFileIfExists } from './utils.js';
 
 const EXECUTION_PROGRESS_SECTIONS = 2;
-const EXECUTION_PROGRESS_CHARS = 3_500;
 const DISCOVERY_PROGRESS_SECTIONS = 3;
-const DISCOVERY_PROGRESS_CHARS = 4_500;
-const EXECUTION_PATTERN_ENTRIES = 10;
-const DISCOVERY_PATTERN_ENTRIES = 14;
-const PATTERN_CHAR_BUDGET = 6_000;
-const BACKLOG_ITEM_LIMIT = 24;
-const BACKLOG_CHAR_BUDGET = 5_000;
+const EXECUTION_PATTERN_ENTRIES = 8;
+const DISCOVERY_PATTERN_ENTRIES = 10;
+const PATTERN_CHAR_BUDGET = 2_400;
+const BACKLOG_ITEM_LIMIT = 12;
+const BACKLOG_FALLBACK_CHAR_BUDGET = 2_400;
+const PROGRESS_HIGHLIGHTS_PER_ENTRY = 3;
+const PROGRESS_LINE_CHAR_LIMIT = 180;
 
-type PatternEntry = {
-  text: string;
-  score: number;
-  index: number;
+type ProgressDigestEntry = {
+  entry: string;
+  highlights: string[];
+};
+
+type BacklogSummary = {
+  source: 'task_specs' | 'backlog_report_fallback';
+  queue_counts?: {
+    ready: number;
+    planned: number;
+    failed: number;
+    done: number;
+  };
+  top_actionable?: Array<{
+    id: string;
+    title: string;
+    priority: BacklogTaskSpec['priority'];
+    state: BacklogTaskSpec['state'];
+  }>;
+  fallback_excerpt?: string;
 };
 
 function repoRelativeConfigPath(config: BacklogRunnerConfig, absolutePath: string): string {
@@ -26,7 +50,11 @@ function repoRelativeConfigPath(config: BacklogRunnerConfig, absolutePath: strin
 
 function trimToBudget(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 15)).trimEnd()}\n… [truncated]`;
+  return `${value.slice(0, Math.max(0, maxChars - 15)).trimEnd()} … [truncated]`;
+}
+
+function compactText(value: string, maxChars = PROGRESS_LINE_CHAR_LIMIT): string {
+  return trimToBudget(normalizeWhitespace(value), maxChars);
 }
 
 function normalizeWord(value: string): string {
@@ -117,38 +145,32 @@ function scorePattern(text: string, keywords: Set<string>): number {
   return score;
 }
 
-function renderPatternDigest(entries: PatternEntry[], maxEntries: number): string {
-  const selected = entries.slice(0, maxEntries);
-  const lines: string[] = [];
-  let used = 0;
-
-  for (const entry of selected) {
-    const next = entry.text.trim();
-    if (!next) continue;
-    if (used + next.length > PATTERN_CHAR_BUDGET && lines.length > 0) break;
-    lines.push(next);
-    used += next.length;
-  }
-
-  if (lines.length === 0) return '- None';
-  const omitted = Math.max(0, entries.length - lines.length);
-  const suffix = omitted > 0 ? `\n- … ${omitted} additional patterns omitted` : '';
-  return `${lines.join('\n')}${suffix}`;
-}
-
-function selectPatternDigest(content: string, keywords: Set<string>, maxEntries: number): string {
+function selectPatternEntries(content: string, keywords: Set<string>, maxEntries: number): string[] {
   const parsed = parsePatternEntries(content);
   const scored = parsed.map((text, index) => ({
     text,
     index,
     score: scorePattern(text, keywords),
   }));
-
   const matched = scored
     .filter(entry => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.index - right.index);
   const fallback = scored.filter(entry => entry.score === 0).sort((left, right) => left.index - right.index);
-  return renderPatternDigest([...matched, ...fallback], maxEntries);
+  const selected = [...matched, ...fallback].slice(0, maxEntries);
+
+  const result: string[] = [];
+  let usedChars = 0;
+  for (const entry of selected) {
+    const compact = compactText(entry.text, 220);
+    if (!compact) continue;
+    if (usedChars + compact.length > PATTERN_CHAR_BUDGET && result.length > 0) {
+      break;
+    }
+    result.push(compact);
+    usedChars += compact.length;
+  }
+
+  return result;
 }
 
 function parseProgressSections(content: string): string[] {
@@ -161,52 +183,80 @@ function parseProgressSections(content: string): string[] {
     .map(section => `## ${section}`);
 }
 
-async function readRecentSections(progressFile: string, maxSections: number, maxChars: number): Promise<string> {
+function summarizeProgressSection(section: string): ProgressDigestEntry | null {
+  const lines = section.replace(/\r\n/g, '\n').split('\n').map(line => line.trimEnd());
+  const heading = compactText(lines[0]?.replace(/^##\s*/, '') ?? '', 120);
+  if (!heading) {
+    return null;
+  }
+
+  const highlights: string[] = [];
+  for (const line of lines.slice(1)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed === '---') continue;
+    if (trimmed.startsWith('## ')) break;
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      highlights.push(compactText(trimmed.slice(2)));
+      continue;
+    }
+    if (trimmed.startsWith('**Learnings') || trimmed.startsWith('Learnings')) {
+      highlights.push(compactText(trimmed.replace(/^\*+|\*+$/g, '')));
+      continue;
+    }
+  }
+
+  const selectedHighlights = [...new Set(highlights)].slice(0, PROGRESS_HIGHLIGHTS_PER_ENTRY);
+  return {
+    entry: heading,
+    highlights: selectedHighlights,
+  };
+}
+
+async function readRecentProgressSummary(progressFile: string, maxSections: number): Promise<ProgressDigestEntry[]> {
   const content = await readFileIfExists(progressFile, '');
   const sections = parseProgressSections(content);
-  if (sections.length === 0) return 'No prior session entries.';
-  return trimToBudget(sections.slice(-maxSections).join('\n\n'), maxChars);
+  if (sections.length === 0) {
+    return [];
+  }
+  return sections
+    .slice(-maxSections)
+    .map(summarizeProgressSection)
+    .filter((entry): entry is ProgressDigestEntry => Boolean(entry));
 }
 
-function renderTaskDigestLabel(task: BacklogTaskSpec): string {
-  const prefix = task.priority === 'high' ? '[HIGH] ' : '';
-  return `- [${task.state}] ${prefix}${task.title}`;
-}
-
-function renderBacklogDigest(tasks: BacklogTaskSpec[], fallbackContent: string): string {
+function buildBacklogSummary(tasks: BacklogTaskSpec[], fallbackContent: string): BacklogSummary {
   if (tasks.length === 0) {
     const trimmed = fallbackContent.trim();
-    return trimmed ? trimToBudget(trimmed, BACKLOG_CHAR_BUDGET) : 'Backlog unavailable.';
+    return {
+      source: 'backlog_report_fallback',
+      fallback_excerpt: trimmed ? trimToBudget(trimmed, BACKLOG_FALLBACK_CHAR_BUDGET) : 'Backlog unavailable.',
+    };
   }
 
-  const counts = {
-    ready: tasks.filter(task => task.state === 'ready').length,
-    planned: tasks.filter(task => task.state === 'planned').length,
-    failed: tasks.filter(task => task.state === 'failed').length,
-    done: tasks.filter(task => task.state === 'done').length,
+  return {
+    source: 'task_specs',
+    queue_counts: {
+      ready: tasks.filter(task => task.state === 'ready').length,
+      planned: tasks.filter(task => task.state === 'planned').length,
+      failed: tasks.filter(task => task.state === 'failed').length,
+      done: tasks.filter(task => task.state === 'done').length,
+    },
+    top_actionable: tasks
+      .filter(task => task.state === 'ready' || task.state === 'planned' || task.state === 'failed')
+      .sort(taskSort)
+      .slice(0, BACKLOG_ITEM_LIMIT)
+      .map(task => ({
+        id: task.id,
+        title: task.title,
+        priority: task.priority,
+        state: task.state,
+      })),
   };
-  const actionableItems = tasks
-    .filter(task => task.state === 'ready' || task.state === 'planned' || task.state === 'failed')
-    .sort(taskSort)
-    .slice(0, BACKLOG_ITEM_LIMIT)
-    .map(renderTaskDigestLabel);
-
-  const summaryLines = [
-    `Queue summary: ${counts.ready} ready · ${counts.planned} planned · ${counts.failed} failed · ${counts.done} done`,
-    '',
-    'Top actionable items:',
-    ...(actionableItems.length > 0 ? actionableItems : ['- None']),
-  ];
-
-  if (tasks.length > BACKLOG_ITEM_LIMIT) {
-    summaryLines.push(`- … ${tasks.length - BACKLOG_ITEM_LIMIT} additional backlog items omitted`);
-  }
-  return trimToBudget(summaryLines.join('\n'), BACKLOG_CHAR_BUDGET);
 }
 
-async function loadBacklogDigestState(config: BacklogRunnerConfig): Promise<{ digest: string; keywords: Set<string> }> {
+async function loadBacklogSummary(config: BacklogRunnerConfig): Promise<{ summary: BacklogSummary; keywords: Set<string> }> {
   const [backlogContent, taskSpecStore] = await Promise.all([
-    readFileIfExists(config.files.backlog, 'Backlog unavailable.'),
+    readFileIfExists(config.files.backlog, ''),
     inspectTaskSpecStore(config.files.taskSpecsDir),
   ]);
   const tasks = taskSpecStore.records
@@ -216,15 +266,119 @@ async function loadBacklogDigestState(config: BacklogRunnerConfig): Promise<{ di
 
   if (tasks.length === 0) {
     return {
-      digest: renderBacklogDigest([], backlogContent),
+      summary: buildBacklogSummary([], backlogContent),
       keywords: keywordSetForDiscovery(backlogContent),
     };
   }
 
   return {
-    digest: renderBacklogDigest(tasks, backlogContent),
+    summary: buildBacklogSummary(tasks, backlogContent),
     keywords: keywordSetForBacklogTasks(tasks),
   };
+}
+
+async function buildRepoMemorySection(
+  config: BacklogRunnerConfig,
+  keywords: Set<string>,
+  options: {
+    patternEntryLimit: number;
+    progressSectionLimit: number;
+    backlogState?: { summary: BacklogSummary; keywords: Set<string> };
+  },
+): Promise<{
+  source: string;
+  backlog: BacklogSummary;
+  pattern_highlights: string[];
+  recent_progress: ProgressDigestEntry[];
+}> {
+  const [patternsContent, progressSummary, backlogState] = await Promise.all([
+    readFileIfExists(config.files.patterns, ''),
+    readRecentProgressSummary(config.files.progress, options.progressSectionLimit),
+    options.backlogState ? Promise.resolve(options.backlogState) : loadBacklogSummary(config),
+  ]);
+
+  return {
+    source: 'synthesized(task_specs,patterns.md,progress.txt)',
+    backlog: backlogState.summary,
+    pattern_highlights: selectPatternEntries(patternsContent, keywords.size > 0 ? keywords : backlogState.keywords, options.patternEntryLimit),
+    recent_progress: progressSummary,
+  };
+}
+
+function compactTask(task: BacklogTaskSpec): Record<string, unknown> {
+  return {
+    id: task.id,
+    title: task.title,
+    priority: task.priority,
+    state: task.state,
+    task_kind: task.taskKind,
+    execution_domain: task.executionDomain ?? null,
+    validation_profile: task.validationProfile,
+    touch_paths: task.touchPaths,
+    capabilities: task.capabilities,
+    acceptance_criteria: task.acceptanceCriteria,
+    status_notes: task.statusNotes.slice(-6),
+  };
+}
+
+function sortDependencies(dependencies: TaskDependencySnapshot[]): TaskDependencySnapshot[] {
+  return [...dependencies].sort((left, right) => left.taskId.localeCompare(right.taskId));
+}
+
+function sortReservations(reservations: TaskReservationSnapshot[]): TaskReservationSnapshot[] {
+  return [...reservations].sort((left, right) => (
+    left.taskId.localeCompare(right.taskId)
+    || left.title.localeCompare(right.title)
+  ));
+}
+
+async function buildExecutionSections(
+  config: BacklogRunnerConfig,
+  claim: BacklogTaskClaim,
+  dependencies: TaskDependencySnapshot[],
+  reservations: TaskReservationSnapshot[],
+): Promise<Array<{ name: string; value: unknown }>> {
+  const keywords = keywordSetForTask(config, claim);
+  const validationCommand = config.validationProfiles[claim.task.validationProfile] ?? config.validationCommand;
+  const repoMemory = await buildRepoMemorySection(config, keywords, {
+    patternEntryLimit: EXECUTION_PATTERN_ENTRIES,
+    progressSectionLimit: EXECUTION_PROGRESS_SECTIONS,
+  });
+
+  return [
+    {
+      name: 'REPO_MEMORY_JSON',
+      value: repoMemory,
+    },
+    {
+      name: 'TASK_BRIEF_JSON',
+      value: {
+        source: 'task_specs',
+        task: compactTask(claim.task),
+      },
+    },
+    {
+      name: 'LIVE_STATE_JSON',
+      value: {
+        source: 'runtime_state+config',
+        dependencies: sortDependencies(dependencies).map(dep => ({
+          task_id: dep.taskId,
+          title: dep.title,
+          state: dep.state,
+        })),
+        active_reservations: sortReservations(reservations).map(reservation => ({
+          task_id: reservation.taskId,
+          title: reservation.title,
+          touch_paths: reservation.touchPaths,
+          capabilities: reservation.capabilities,
+          expires_at: reservation.expiresAt,
+        })),
+        validation_command: validationCommand,
+        candidate_queue_path: repoRelativeConfigPath(config, config.files.candidateQueue),
+        task_specs_dir: repoRelativeConfigPath(config, config.files.taskSpecsDir),
+      },
+    },
+  ];
 }
 
 export async function buildExecutionContext(
@@ -232,82 +386,12 @@ export async function buildExecutionContext(
   claim: BacklogTaskClaim,
   dependencies: TaskDependencySnapshot[],
   reservations: TaskReservationSnapshot[],
-): Promise<string> {
-  const [patternsContent, recent] = await Promise.all([
-    readFileIfExists(config.files.patterns, ''),
-    readRecentSections(config.files.progress, EXECUTION_PROGRESS_SECTIONS, EXECUTION_PROGRESS_CHARS),
-  ]);
-  const keywords = keywordSetForTask(config, claim);
-  const validationCommand = config.validationProfiles[claim.task.validationProfile] ?? config.validationCommand;
-  const dependencySection = dependencies.length === 0
-    ? '- None'
-    : dependencies.map(dep => `- ${dep.title} (${dep.taskId}) — ${dep.state}`).join('\n');
-  const reservationSection = reservations.length === 0
-    ? '- None'
-    : reservations.map(reservation => {
-        const touchPaths = reservation.touchPaths.length > 0 ? reservation.touchPaths.join(', ') : '(none)';
-        const capabilities = reservation.capabilities.length > 0 ? reservation.capabilities.join(', ') : '(none)';
-        return `- ${reservation.title} (${reservation.taskId}) — touch_paths: ${touchPaths}; capabilities: ${capabilities}; lease expires: ${reservation.expiresAt}`;
-      }).join('\n');
-  const acceptanceCriteria = claim.task.acceptanceCriteria.length > 0
-    ? claim.task.acceptanceCriteria.map(item => `- ${item}`).join('\n')
-    : `- ${claim.task.title}`;
-
-  return `## Relevant Patterns
-${selectPatternDigest(patternsContent, keywords, EXECUTION_PATTERN_ENTRIES)}
-
-## Recent Session Digest
-${recent}
-
-## Assigned Task
-ID: ${claim.task.id}
-Title: ${claim.task.title}
-Priority: ${claim.task.priority}
-Task kind: ${claim.task.taskKind}
-Execution domain: ${claim.task.executionDomain ?? 'n/a'}
-Validation profile: ${claim.task.validationProfile}
-
-Declared touch_paths (intended starting surface):
-${claim.task.touchPaths.map(item => `- ${item}`).join('\n') || '- None'}
-
-Capabilities:
-${claim.task.capabilities.map(item => `- ${item}`).join('\n') || '- None'}
-
-Dependencies:
-${dependencySection}
-
-Acceptance criteria:
-${acceptanceCriteria}
-
-Status notes:
-${claim.task.statusNotes.map(item => `- ${item}`).join('\n') || '- None'}
-
-## Active Reservations
-${reservationSection}
-
-## Validation Command
-The scheduler will run this exact command after your task is complete:
-${validationCommand}
-
-Use smaller targeted checks while you work. Do not rerun the full final validation command unless you need it to debug a failure.
-
-## Candidate Queue
-If this work reveals another backlog item or context that a later run should keep, append one JSON object per line to:
-${repoRelativeConfigPath(config, config.files.candidateQueue)}
-
-Schema:
-{"title":"Standalone backlog item title","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context for the future run","source":{"type":"task-followup"}}
-
-## Stop Rules
-- Do not modify backlog.md directly; it is generated from ${repoRelativeConfigPath(config, config.files.taskSpecsDir)}.
-- Start from the declared touch_paths, but broaden the edit set when adjacent changes are required to satisfy the task coherently.
-- Do not start adjacent cleanup just because it is nearby; adjacent discoveries become follow-up tasks.
-- Do not change another active task's reserved files or subsystem surface.
-- If task kind is research, inspect code and write concrete follow-up backlog items only. Do not implement product or server code during the research task.`;
+): Promise<AgentContextPayload> {
+  return buildContextPayload('execution', await buildExecutionSections(config, claim, dependencies, reservations));
 }
 
-function renderPathList(items: string[]): string {
-  return items.length > 0 ? items.map(item => `- ${item}`).join('\n') : '- None';
+function renderPathList(items: string[]): string[] {
+  return items.map(item => compactText(item, 220));
 }
 
 export async function buildWorkspaceRepairContext(
@@ -325,48 +409,24 @@ export async function buildWorkspaceRepairContext(
     validationSummary?: string;
     originalDiff?: string;
   },
-): Promise<string> {
-  const base = await buildExecutionContext(config, claim, dependencies, reservations);
-  const trimmedDiff = options.originalDiff
-    ? trimToBudget(options.originalDiff, 12_000)
-    : null;
-
-  return `${base}
-
-## Workspace Repair Failure
-Repair mode: ${options.mode}
-
-Failure reason:
-${options.failureReason}
-
-Validation summary:
-${options.validationSummary ?? 'None'}
-
-Changed files:
-${renderPathList(options.changedFiles)}
-
-Staged files:
-${renderPathList(options.stagedFiles)}
-
-Changed files that match declared touch_paths:
-${renderPathList(options.declaredTouchPathFiles)}
-
-Additional changed files beyond declared touch_paths:
-${renderPathList(options.additionalFiles)}
-${trimmedDiff ? `
-
-## Relevant Diff
-\`\`\`diff
-${trimmedDiff}
-\`\`\`` : ''}
-
-## Workspace Repair Goal
-- This repository is agent-operated by default. Assume repo changes are agent-originated unless the local code clearly proves otherwise.
-- You may inspect, preserve, discard, split into follow-up work, or restage changes when that is the best way to recover the assigned task.
-- If you discard or split work, leave an audit trail in progress notes so a later agent can understand the decision.
-- If the task is stale or impossible, return failed with a note starting exactly \`stale —\` or \`impossible —\`.
-- If the workspace can be repaired so scheduler checks pass, return done.
-- Keep the final result coherent with the assigned acceptance criteria. Use declared touch_paths as a guide, not as a hard boundary, while still respecting active reservations and backlog bookkeeping rules.`;
+): Promise<AgentContextPayload> {
+  const sections = await buildExecutionSections(config, claim, dependencies, reservations);
+  const trimmedDiff = options.originalDiff ? trimToBudget(options.originalDiff, 8_000) : undefined;
+  sections.push({
+    name: 'WORKSPACE_REPAIR_JSON',
+    value: {
+      source: 'workspace_snapshot',
+      mode: options.mode,
+      failure_reason: compactText(options.failureReason, 240),
+      validation_summary: options.validationSummary ? compactText(options.validationSummary, 240) : undefined,
+      changed_files: renderPathList(options.changedFiles),
+      staged_files: renderPathList(options.stagedFiles),
+      declared_touch_path_files: renderPathList(options.declaredTouchPathFiles),
+      additional_files: renderPathList(options.additionalFiles),
+      relevant_diff: trimmedDiff,
+    },
+  });
+  return buildContextPayload(options.mode === 'finalize' ? 'reconciliation' : 'repair', sections);
 }
 
 export async function buildReconciliationContext(
@@ -376,7 +436,7 @@ export async function buildReconciliationContext(
   reservations: TaskReservationSnapshot[],
   failureReason: string,
   originalDiff: string,
-): Promise<string> {
+): Promise<AgentContextPayload> {
   return buildWorkspaceRepairContext(config, claim, dependencies, reservations, {
     failureReason,
     mode: 'finalize',
@@ -391,85 +451,78 @@ export async function buildReconciliationContext(
 export async function buildDiscoveryContext(
   config: BacklogRunnerConfig,
   passId: string,
-): Promise<string> {
-  const [patternsContent, recent, backlogState] = await Promise.all([
-    readFileIfExists(config.files.patterns, ''),
-    readRecentSections(config.files.progress, DISCOVERY_PROGRESS_SECTIONS, DISCOVERY_PROGRESS_CHARS),
-    loadBacklogDigestState(config),
-  ]);
-  const keywords = backlogState.keywords;
+): Promise<AgentContextPayload> {
+  const backlogState = await loadBacklogSummary(config);
+  const repoMemory = await buildRepoMemorySection(config, backlogState.keywords, {
+    patternEntryLimit: DISCOVERY_PATTERN_ENTRIES,
+    progressSectionLimit: DISCOVERY_PROGRESS_SECTIONS,
+    backlogState,
+  });
   const currentPass = config.passes[passId];
   const otherPasses = Object.values(config.passes)
     .filter(pass => pass.id !== passId && pass.enabled)
-    .map(pass => `- ${pass.id}${pass.description ? `: ${pass.description}` : ''}`)
-    .join('\n') || '- None';
-  const heuristics = currentPass
-    ? [
-        `Include path hints:\n${currentPass.heuristics.includePaths.map(item => `- ${item}`).join('\n') || '- None'}`,
-        `Exclude path hints:\n${currentPass.heuristics.excludePaths.map(item => `- ${item}`).join('\n') || '- None'}`,
-        `Capability hints:\n${currentPass.heuristics.capabilities.map(item => `- ${item}`).join('\n') || '- None'}`,
-      ].join('\n\n')
-    : 'No current pass metadata available.';
+    .sort((left, right) => left.id.localeCompare(right.id));
 
-  return `## Relevant Patterns
-${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
-
-## Recent Session Digest
-${recent}
-
-## Backlog Digest
-${backlogState.digest}
-
-## Current Discovery Pass
-Pass id: ${currentPass?.id ?? passId}
-Description: ${currentPass?.description ?? 'None'}
-
-${heuristics}
-
-## Other Configured Discovery Passes
-${otherPasses}
-
-## Planner Flow
-Configured discovery passes write structured JSONL candidate records to ${repoRelativeConfigPath(config, config.files.candidateQueue)}.
-The planner step converts those entries into ${repoRelativeConfigPath(config, config.files.taskSpecsDir)}/**/*.yaml and only runnable task specs are eligible for execution.
-Do not modify backlog.md directly.`;
+  return buildContextPayload('discovery', [
+    {
+      name: 'REPO_MEMORY_JSON',
+      value: repoMemory,
+    },
+    {
+      name: 'DISCOVERY_BRIEF_JSON',
+      value: {
+        source: 'pass_config',
+        current_pass: currentPass
+          ? {
+              id: currentPass.id,
+              description: currentPass.description ?? null,
+              include_paths: currentPass.heuristics.includePaths,
+              exclude_paths: currentPass.heuristics.excludePaths,
+              capabilities: currentPass.heuristics.capabilities,
+            }
+          : {
+              id: passId,
+              description: null,
+              include_paths: [],
+              exclude_paths: [],
+              capabilities: [],
+            },
+        other_enabled_passes: otherPasses.map(pass => ({
+          id: pass.id,
+          description: pass.description ?? null,
+        })),
+        candidate_queue_path: repoRelativeConfigPath(config, config.files.candidateQueue),
+        task_specs_dir: repoRelativeConfigPath(config, config.files.taskSpecsDir),
+      },
+    },
+  ]);
 }
 
 export async function buildPlannerContext(
   config: BacklogRunnerConfig,
   plannerCandidates: BacklogTaskSpec[],
-): Promise<string> {
-  const [patternsContent, recent, backlogState] = await Promise.all([
-    readFileIfExists(config.files.patterns, ''),
-    readRecentSections(config.files.progress, DISCOVERY_PROGRESS_SECTIONS, DISCOVERY_PROGRESS_CHARS),
-    loadBacklogDigestState(config),
+): Promise<AgentContextPayload> {
+  const backlogState = await loadBacklogSummary(config);
+  const repoMemory = await buildRepoMemorySection(config, backlogState.keywords, {
+    patternEntryLimit: DISCOVERY_PATTERN_ENTRIES,
+    progressSectionLimit: DISCOVERY_PROGRESS_SECTIONS,
+    backlogState,
+  });
+
+  return buildContextPayload('planner', [
+    {
+      name: 'REPO_MEMORY_JSON',
+      value: repoMemory,
+    },
+    {
+      name: 'PLANNER_BATCH_JSON',
+      value: {
+        source: 'task_specs',
+        max_batch_size: plannerBatchSize(),
+        parents: plannerCandidates.slice(0, plannerBatchSize()).map(task => compactTask(task)),
+      },
+    },
   ]);
-  const keywords = backlogState.keywords;
-
-  return `## Relevant Patterns
-${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
-
-## Recent Session Digest
-${recent}
-
-## Backlog Digest
-${backlogState.digest}
-
-## Tasks To Refine
-Refine at most ${plannerBatchSize()} planner candidates in this pass.
-Failed tasks are recovery work and should be treated as higher-priority planner inputs than untouched planned tasks.
-
-${plannerContextForTasks(plannerCandidates)}
-
-## Refinement Rules
-- Treat this as a read-only planning pass. Do not edit repo files directly.
-- Failed task status notes are recovery evidence. Use them to decide whether to replace the task as-is, narrow it, or emit prerequisite work.
-- Prefer one clustered research task when multiple selected items clearly overlap.
-- Supersede parents with child tasks; do not keep duplicate parent work alive.
-- Prefer research tasks that inspect code and emit concrete implementation follow-up tasks.
-- Research children must stay backlog-only; the scheduler will force backlog touch_paths and the backlog validation profile.
-- For every selected failed task, either emit a like-for-like replacement child or emit narrower/prerequisite children that explain the recovery path.
-- Return one strict JSON object matching the requested schema.`;
 }
 
 export async function inspectBacklogState(

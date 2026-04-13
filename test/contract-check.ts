@@ -2,36 +2,30 @@ import { normalizeBacklogRunnerConfig } from '../src/config.js';
 import type { BacklogRunnerConfigInput, BacklogTaskSpec } from '../src/types.js';
 
 const validConfig = {
-  files: {
-    backlog: './backlog.md',
-    candidateQueue: './backlog/inbox.jsonl',
-    taskSpecsDir: './backlog/tasks',
-    stop: './backlog-stop',
-    runtimeReport: './.backlog-runner/runtime-report.md',
-    patterns: './scripts/backlog/patterns.md',
-    progress: './scripts/backlog/progress.txt',
-    stateDb: './.backlog-runner/state.sqlite',
-    runnerLogDir: './.backlog-runner/logs',
-    runtimeDir: './.backlog-runner',
-    locksDir: './.backlog-runner/locks',
-  },
+  preset: 'balanced',
   prompts: {
     agent: './scripts/backlog/agent.md',
     planner: './scripts/backlog/planner.md',
   },
-  validationCommand: 'bash scripts/backlog/validate.sh',
-  validationProfiles: {
-    repo: 'bash scripts/backlog/validate.sh',
+  validation: {
+    default: 'bash scripts/backlog/validate.sh',
   },
-  runners: {
-    taskUi: { tool: 'claude', model: 'claude-opus-4-6' },
-    taskCode: { tool: 'codex', model: 'gpt-5.4' },
-    planner: { tool: 'codex', model: 'gpt-5.4' },
+  providers: {
+    agents: {
+      ui: { tool: 'claude', model: 'claude-opus-4-6' },
+      code: { tool: 'codex', model: 'gpt-5.4' },
+      planner: { tool: 'codex', model: 'gpt-5.4' },
+    },
   },
-  defaults: {
+  workspace: {
     workers: 1,
-    passes: true,
-    worktrees: true,
+    useWorktrees: true,
+  },
+  discovery: {
+    enabled: true,
+    passes: {
+      frontend: {},
+    },
   },
 } satisfies BacklogRunnerConfigInput;
 
@@ -63,12 +57,14 @@ const invalidLegacyPrompts: BacklogRunnerConfigInput['prompts'] = {
   product: './scripts/backlog/product.md',
 };
 
-const invalidLegacyRunners: BacklogRunnerConfigInput['runners'] = {
-  taskUi: { tool: 'claude', model: 'claude-opus-4-6' },
-  taskCode: { tool: 'codex', model: 'gpt-5.4' },
-  planner: { tool: 'codex', model: 'gpt-5.4' },
-  // @ts-expect-error Legacy runner roles were removed from the config contract.
-  product: { tool: 'codex', model: 'gpt-5.4' },
+const invalidLegacyProviders: NonNullable<BacklogRunnerConfigInput['providers']> = {
+  agents: {
+    ui: { tool: 'claude', model: 'claude-opus-4-6' },
+    code: { tool: 'codex', model: 'gpt-5.4' },
+    planner: { tool: 'codex', model: 'gpt-5.4' },
+    // @ts-expect-error Legacy runner roles were removed from the public config contract.
+    product: { tool: 'codex', model: 'gpt-5.4' },
+  },
 };
 
 const invalidLegacySourceTask: BacklogTaskSpec = {
@@ -91,5 +87,5 @@ const invalidLegacySourceTask: BacklogTaskSpec = {
 };
 
 void invalidLegacyPrompts;
-void invalidLegacyRunners;
+void invalidLegacyProviders;
 void invalidLegacySourceTask;

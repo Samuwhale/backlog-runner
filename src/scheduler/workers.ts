@@ -87,10 +87,15 @@ async function runSingleDiscoveryPass(
     const model = pass.runner?.model
       ? await resolveModelAlias(config, pass.runner.model, tool)
       : (pass.runner?.tool && pass.runner.tool !== fallbackRunner.tool ? undefined : fallbackRunner.model);
+    const contextPayload = {
+      context: `${context.prefix}\n\n${context.tail}`,
+      contextPrefix: context.prefix,
+      contextTail: context.tail,
+    };
     const result = await runProvider(commandRunner, {
       tool,
       model,
-      context,
+      ...contextPayload,
       prompt: await readPrompt(pass.promptFile),
       cwd: session.cwd,
       maxTurns: 50,
@@ -219,10 +224,15 @@ export async function runPlannerWorker(
       const baselineDirty = new Set(await changedFiles(commandRunner, session.cwd));
       const context = await buildPlannerContext(config, plannerCandidates);
       const runner = getRunnerConfig(options, 'planner');
+      const contextPayload = {
+        context: `${context.prefix}\n\n${context.tail}`,
+        contextPrefix: context.prefix,
+        contextTail: context.tail,
+      };
       const result = await runProvider(commandRunner, {
         tool: runner.tool,
         model: runner.model,
-        context,
+        ...contextPayload,
         prompt: await readPrompt(config.prompts.planner),
         cwd: session.cwd,
         maxTurns: 50,

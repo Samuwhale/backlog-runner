@@ -2,6 +2,7 @@ import type { RunnerLogger } from '../logger.js';
 import type { BacklogImplementationRunnerRole } from '../types.js';
 import { containsSharedInstallPolicyCode } from '../workspace/shared-install.js';
 import type {
+  AgentContextPayload,
   AgentResult,
   AgentRunRequest,
   BacklogRunnerConfig,
@@ -23,7 +24,7 @@ export interface LifecycleAgentPhaseOptions {
   logger: RunnerLogger;
   executionRole: BacklogImplementationRunnerRole;
   label: string;
-  context: string;
+  context: string | AgentContextPayload;
   prompt: string;
   cwd: string;
   maxTurns: number;

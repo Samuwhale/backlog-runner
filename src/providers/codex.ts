@@ -130,7 +130,12 @@ export const codexProvider: ProviderAdapter = {
     return withTempDir('backlog-codex-', async dir => {
       const schemaFile = await writeTempFile(dir, 'schema.json', request.schema || JSON_SCHEMA);
       const outputFile = `${dir}/last-message.json`;
-      const mergedPrompt = `${request.prompt}\n\n${request.context}`;
+      const mergedPrompt = [
+        request.contextPrefix,
+        request.prompt,
+        request.contextTail,
+        !request.contextPrefix && !request.contextTail ? request.context : undefined,
+      ].filter(Boolean).join('\n\n');
       const result = await commandRunner.run(
         'codex',
         [

@@ -99,6 +99,7 @@ function buildWorkspaceValidationFollowup(
 ): BacklogCandidateRecord {
   return {
     title: 'Repair worktree validation environment',
+    taskKind: 'implementation',
     priority: 'high',
     touchPaths: [
       'src/workspace/git-worktree.ts',
@@ -121,6 +122,7 @@ function buildUnrelatedValidationFollowup(
 ): BacklogCandidateRecord {
   return {
     title: `Resolve unrelated validation failure after ${claim.task.title}`,
+    taskKind: 'implementation',
     priority: 'normal',
     touchPaths,
     acceptanceCriteria: [

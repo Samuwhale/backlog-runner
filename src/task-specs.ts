@@ -41,6 +41,19 @@ export function normalizeRepoPath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '');
 }
 
+function normalizeRepoPrefix(value: string): string {
+  return normalizeRepoPath(value).replace(/\/+$/, '');
+}
+
+function matchesRepoPathPrefix(filePath: string, prefix: string): boolean {
+  const normalizedFilePath = normalizeRepoPath(filePath);
+  const normalizedPrefix = normalizeRepoPrefix(prefix);
+  if (!normalizedPrefix) {
+    return false;
+  }
+  return normalizedFilePath === normalizedPrefix || normalizedFilePath.startsWith(`${normalizedPrefix}/`);
+}
+
 function toArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map(item => normalizeWhitespace(String(item))).filter(Boolean)
@@ -221,7 +234,7 @@ function inferValidationProfile(
     if (
       validationProfiles[rule.profile]
       && rule.pathPrefixes.length > 0
-      && touchPaths.every(item => rule.pathPrefixes.some(prefix => item === prefix || item.startsWith(`${prefix}/`)))
+      && touchPaths.every(item => rule.pathPrefixes.some(prefix => matchesRepoPathPrefix(item, prefix)))
     ) {
       return rule.profile;
     }
@@ -528,6 +541,11 @@ export function parseCandidateRecordDetailed(line: string): CandidateParseResult
   }
 
   const validationProfile = normalizeWhitespace(String(parsed.validation_profile ?? '')) || undefined;
+  const taskKindValue = normalizeWhitespace(String(parsed.task_kind ?? 'implementation')).toLowerCase();
+  if (taskKindValue !== 'implementation' && taskKindValue !== 'research') {
+    return { ok: false, reason: 'invalid task_kind' };
+  }
+  const taskKind: BacklogTaskKind = taskKindValue;
   const executionDomain = normalizeExecutionDomain(parsed.execution_domain);
   const capabilities = Array.isArray(parsed.capabilities)
     ? [...new Set(parsed.capabilities.map(item => normalizeWhitespace(String(item)).toLowerCase()).filter(Boolean))]
@@ -538,6 +556,7 @@ export function parseCandidateRecordDetailed(line: string): CandidateParseResult
     ok: true,
     candidate: {
       title,
+      taskKind,
       priority,
       touchPaths,
       acceptanceCriteria,
@@ -588,7 +607,12 @@ export function createTaskFromCandidateDetailed(
     ? [...new Set(candidate.capabilities.map(item => normalizeWhitespace(item).toLowerCase()).filter(Boolean))]
     : inferCapabilities(touchPaths, config);
   const statusNotes = candidate.context ? [`Context: ${candidate.context}`] : [];
-  const executionDomain = inferExecutionDomain('implementation', candidate.source, touchPaths, candidate.executionDomain, config);
+  const taskKind = candidate.taskKind;
+  const executionDomain = inferExecutionDomain(taskKind, candidate.source, touchPaths, candidate.executionDomain, config);
+
+  if (taskKind === 'implementation' && !executionDomain) {
+    return { ok: false, reason: 'implementation candidate is missing execution_domain' };
+  }
 
   return {
     ok: true,
@@ -596,7 +620,7 @@ export function createTaskFromCandidateDetailed(
       id: createTaskId(title),
       title,
       priority: candidate.priority,
-      taskKind: 'implementation',
+      taskKind,
       executionDomain,
       dependsOn: [],
       touchPaths,

@@ -19,7 +19,7 @@ export async function initBacklogRunner(targetDir: string, options: InitBacklogR
 
   return [
     `Initialized backlog-runner scaffold in ${projectRoot}`,
-    'Edit backlog.config.mjs to point validation profiles at your real repo checks.',
+    'Edit backlog.config.mjs to point validation at your real repo checks.',
     'Review scripts/backlog/README.md and scripts/backlog/passes/*.md to customize discovery for your repo.',
   ];
 }

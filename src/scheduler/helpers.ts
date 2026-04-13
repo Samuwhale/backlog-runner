@@ -7,6 +7,7 @@ import { JSON_SCHEMA, isAuthFailure, isRateLimited } from '../providers/common.j
 import { runProvider } from '../providers/index.js';
 import { parseGitStatusPaths } from '../utils.js';
 import type {
+  AgentContextPayload,
   AgentResult,
   AgentRunRequest,
   BacklogDrainResult,
@@ -187,7 +188,7 @@ export interface LoggedAgentPhaseOptions {
   logger: RunnerLogger;
   role: BacklogRunnerRole;
   label: string;
-  context: string;
+  context: string | AgentContextPayload;
   prompt: string;
   cwd: string;
   maxTurns: number;
@@ -209,10 +210,17 @@ export async function runLoggedAgentPhase({
   onProgress,
 }: LoggedAgentPhaseOptions): Promise<AgentResult> {
   const runner = getRunnerConfig(options, role);
+  const contextPayload = typeof context === 'string'
+    ? { context }
+    : {
+        context: `${context.prefix}\n\n${context.tail}`,
+        contextPrefix: context.prefix,
+        contextTail: context.tail,
+      };
   const result = await runProvider(commandRunner, {
     tool: runner.tool,
     model: runner.model,
-    context,
+    ...contextPayload,
     prompt,
     cwd,
     maxTurns,

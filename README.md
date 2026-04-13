@@ -40,10 +40,10 @@ That creates:
 
 Then customize:
 
-1. Update `validationCommand` and `validationProfiles` in `backlog.config.mjs`.
+1. Update `validation` in `backlog.config.mjs` to point at your real repo checks.
 2. Read `scripts/backlog/README.md` for the repo-local pass authoring model.
 3. Adjust `scripts/backlog/passes/*.md` prompts to fit your workflow.
-4. Tune `heuristics.validationProfileRules` and `heuristics.uiPathPrefixes` for your codebase.
+4. Add `classification` or extra `validation.routing` rules only if the defaults are too broad.
 
 ## Commands
 
@@ -63,36 +63,43 @@ The runner is configured via `backlog.config.mjs`:
 
 ```js
 export default {
-  validationCommand: 'bash scripts/backlog/validate.sh',
-  validationProfiles: {
-    repo: 'bash scripts/backlog/validate.sh',
-    frontend: 'npm run lint --workspace web',
-  },
-  heuristics: {
-    uiPathPrefixes: ['apps/web/', 'src/components/'],
-    validationProfileRules: [
+  preset: 'balanced',
+  validation: {
+    default: 'bash scripts/backlog/validate.sh',
+    profiles: {
+      frontend: 'npm run lint --workspace web',
+    },
+    routing: [
       { profile: 'frontend', pathPrefixes: ['apps/web/', 'src/components/'] },
     ],
+  },
+  workspace: {
+    workers: 2,
+    useWorktrees: true,
+  },
+  classification: {
+    uiPathPrefixes: ['apps/web/', 'src/components/'],
   },
   workspaceBootstrap: {
     installCommand: 'npm install',
     repairCommand: 'backlog-runner doctor --repair',
   },
-  runners: {
-    taskUi: { tool: 'claude', model: 'claude-opus-4-6' },
-    taskCode: { tool: 'codex', model: 'gpt-5.4' },
-    planner: { tool: 'codex', model: 'gpt-5.4' },
-  },
-  passes: {
-    frontend: {
-      kind: 'discovery',
-      promptFile: './scripts/backlog/passes/frontend.md',
-      runner: { tool: 'claude', model: 'claude-opus-4-6' },
+  providers: {
+    agents: {
+      ui: { tool: 'claude', model: 'claude-opus-4-6' },
+      code: { tool: 'codex', model: 'gpt-5.4' },
+      planner: { tool: 'codex', model: 'gpt-5.4' },
     },
-    deps: {
-      kind: 'discovery',
-      promptFile: './scripts/backlog/passes/deps.md',
-      runner: { tool: 'codex', model: 'gpt-5.4' },
+  },
+  discovery: {
+    enabled: true,
+    passes: {
+      frontend: {
+        runner: { tool: 'claude', model: 'claude-opus-4-6' },
+      },
+      deps: {
+        runner: { tool: 'codex', model: 'gpt-5.4' },
+      },
     },
   },
 };
