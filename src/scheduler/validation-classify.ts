@@ -63,9 +63,12 @@ function prefixRelativeSourcePaths(reason: string, changedFiles: string[]): stri
     return [];
   }
 
-  return [...reason.matchAll(PACKAGE_RELATIVE_SRC_PATH_PATTERN)].map(match =>
-    sanitizeValidationPath(`${context}/${match[0]}`),
-  );
+  return [...reason.matchAll(PACKAGE_RELATIVE_SRC_PATH_PATTERN)]
+    .filter(match => {
+      const start = match.index ?? 0;
+      return start === 0 || reason[start - 1] !== '/';
+    })
+    .map(match => sanitizeValidationPath(`${context}/${match[0]}`));
 }
 
 function extractValidationPaths(reason: string, changedFiles: string[]): string[] {
@@ -106,9 +109,8 @@ function buildWorkspaceValidationFollowup(
       'Repo validation reruns no longer fail with missing-module workspace errors unrelated to completed task code.',
     ],
     executionDomain: 'code_logic',
-    validationProfile: 'backlog',
     context: `Task "${claim.task.title}" completed its scoped work, but validation surfaced a worktree/bootstrap issue instead of a task-local defect: ${reason}`,
-    source: 'task-followup',
+    source: { type: 'task-followup' },
   };
 }
 
@@ -127,7 +129,7 @@ function buildUnrelatedValidationFollowup(
     ],
     executionDomain: 'code_logic',
     context: `Task "${claim.task.title}" completed its scoped work, but validation surfaced an unrelated failure outside its touch_paths: ${reason}`,
-    source: 'task-followup',
+    source: { type: 'task-followup' },
   };
 }
 

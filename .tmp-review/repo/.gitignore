@@ -1,0 +1,3 @@
+.backlog-runner/state.sqlite
+.backlog-runner/logs/
+backlog-stop

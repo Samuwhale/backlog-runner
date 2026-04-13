@@ -97,7 +97,7 @@ function parsePlannerChild(value: unknown, config?: BacklogRunnerConfig): Planne
 
   const executionDomain = inferExecutionDomain(
     taskKind,
-    'planner-pass',
+    { type: 'planner-pass' },
     touchPaths,
     normalizeExecutionDomain(record.execution_domain),
     config,

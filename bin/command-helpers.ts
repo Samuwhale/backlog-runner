@@ -3,14 +3,17 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import type { RunOverrides, BacklogTool } from '../src/types.js';
 
-export type CliCommandName = 'start' | 'doctor' | 'sync' | 'status' | 'init';
+export type CliCommandName = 'start' | 'doctor' | 'sync' | 'status' | 'init' | 'setup' | 'pass';
+export type CliPassAction = 'list' | 'add' | 'remove' | 'enable' | 'disable';
 
 export type ParsedCliCommand =
   | { command: 'start'; configPath: string; overrides: RunOverrides; yes: boolean }
   | { command: 'doctor'; configPath: string; overrides: RunOverrides; repair: boolean }
   | { command: 'sync'; configPath: string }
   | { command: 'status'; configPath: string; verbose: boolean }
-  | { command: 'init'; targetDir: string; force: boolean };
+  | { command: 'init'; targetDir: string; force: boolean }
+  | { command: 'setup'; configPath: string; agentic: boolean; yes: boolean }
+  | { command: 'pass'; configPath: string; action: CliPassAction; passId?: string };
 
 type CliOptionSchema = Record<string, { type: 'string' | 'boolean'; short?: string }>;
 type ParsedOptionValue = string | boolean | Array<string | boolean> | undefined;
@@ -54,6 +57,18 @@ const INIT_OPTIONS = {
   help: { type: 'boolean', short: 'h' },
   dir: { type: 'string' },
   force: { type: 'boolean', short: 'f' },
+} satisfies CliOptionSchema;
+
+const SETUP_OPTIONS = {
+  help: { type: 'boolean', short: 'h' },
+  config: { type: 'string' },
+  agentic: { type: 'boolean' },
+  yes: { type: 'boolean', short: 'y' },
+} satisfies CliOptionSchema;
+
+const PASS_OPTIONS = {
+  help: { type: 'boolean', short: 'h' },
+  config: { type: 'string' },
 } satisfies CliOptionSchema;
 
 const COMMANDS: Record<CliCommandName, {
@@ -142,6 +157,34 @@ const COMMANDS: Record<CliCommandName, {
       '  backlog-runner init --force',
     ],
   },
+  setup: {
+    summary: 'Guide discovery-pass setup and rewrite config canonically.',
+    usage: 'backlog-runner setup [--agentic] [--yes] [--config PATH]',
+    options: [
+      '  --agentic           Ask a provider to draft pass recommendations and prompt text before review.',
+      '  --yes, -y           Accept defaults and apply without the interactive review prompt.',
+      '  --config PATH       Write to a specific config file. Defaults to ./backlog.config.mjs.',
+      '  --help, -h          Show this help.',
+    ],
+    examples: [
+      '  backlog-runner setup',
+      '  backlog-runner setup --agentic',
+      '  backlog-runner setup --yes',
+    ],
+  },
+  pass: {
+    summary: 'List or mutate configured discovery passes.',
+    usage: 'backlog-runner pass <list|add|remove|enable|disable> [id] [--config PATH]',
+    options: [
+      '  --config PATH       Use a specific backlog runner config file.',
+      '  --help, -h          Show this help.',
+    ],
+    examples: [
+      '  backlog-runner pass list',
+      '  backlog-runner pass add docs',
+      '  backlog-runner pass disable frontend',
+    ],
+  },
 };
 
 export const CLI_COMMANDS = Object.keys(COMMANDS) as CliCommandName[];
@@ -167,6 +210,8 @@ export function renderTopLevelHelp(): string {
     '  backlog-runner sync',
     '  backlog-runner status --verbose',
     '  backlog-runner init',
+    '  backlog-runner setup',
+    '  backlog-runner pass list',
     '',
     'Run `backlog-runner <command> --help` for command-specific options.',
     '',
@@ -221,6 +266,10 @@ export async function discoverConfigPath(cwd: string, override?: string): Promis
   }
 }
 
+export function resolveSetupConfigPath(cwd: string, override?: string): string {
+  return override?.trim() || path.join(cwd, 'backlog.config.mjs');
+}
+
 export function parseWorkers(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -260,13 +309,15 @@ function parseCommandArgs(command: CliCommandName, args: string[]): ReturnType<t
     sync: SYNC_OPTIONS,
     status: STATUS_OPTIONS,
     init: INIT_OPTIONS,
+    setup: SETUP_OPTIONS,
+    pass: PASS_OPTIONS,
   };
   const normalizedArgs = args.filter(arg => arg !== '--');
 
   return parseArgs({
     args: normalizedArgs,
     options: optionsByCommand[command],
-    allowPositionals: false,
+    allowPositionals: command === 'pass',
     strict: true,
   });
 }
@@ -286,9 +337,11 @@ export function formatCommandParseError(command: CliCommandName, error: unknown)
 }
 
 export async function parseCliCommand(command: CliCommandName, args: string[], cwd: string): Promise<ParsedCliCommand> {
+  let parsedArgs: ReturnType<typeof parseCommandArgs>;
   let values: Record<string, ParsedOptionValue>;
   try {
-    ({ values } = parseCommandArgs(command, args));
+    parsedArgs = parseCommandArgs(command, args);
+    ({ values } = parsedArgs);
   } catch (error) {
     throw formatCommandParseError(command, error);
   }
@@ -298,6 +351,34 @@ export async function parseCliCommand(command: CliCommandName, args: string[], c
       command,
       targetDir: (values.dir as string | undefined) || cwd,
       force: values.force === true,
+    };
+  }
+
+  if (command === 'setup') {
+    return {
+      command,
+      configPath: resolveSetupConfigPath(cwd, values.config as string | undefined),
+      agentic: values.agentic === true,
+      yes: values.yes === true,
+    };
+  }
+
+  if (command === 'pass') {
+    const [rawAction, rawPassId] = parsedArgs.positionals;
+    if (!rawAction) {
+      throw new Error(`Missing pass action. Expected one of: list, add, remove, enable, disable.`);
+    }
+    if (!['list', 'add', 'remove', 'enable', 'disable'].includes(rawAction)) {
+      throw new Error(`Invalid pass action: ${rawAction}. Expected one of: list, add, remove, enable, disable.`);
+    }
+    if (rawAction !== 'list' && !rawPassId) {
+      throw new Error(`Pass action '${rawAction}' requires a pass id.`);
+    }
+    return {
+      command,
+      configPath: await discoverConfigPath(cwd, values.config as string | undefined),
+      action: rawAction as CliPassAction,
+      passId: rawPassId,
     };
   }
 

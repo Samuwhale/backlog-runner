@@ -1,9 +1,8 @@
 export type BacklogTool = 'claude' | 'codex';
-export const BACKLOG_DISCOVERY_PASSES = ['interface', 'ux', 'product', 'code'] as const;
-export type BacklogPassType = typeof BACKLOG_DISCOVERY_PASSES[number];
+export type BacklogPassKind = 'discovery';
 export const BACKLOG_IMPLEMENTATION_RUNNER_ROLES = ['taskUi', 'taskCode'] as const;
 export type BacklogImplementationRunnerRole = typeof BACKLOG_IMPLEMENTATION_RUNNER_ROLES[number];
-export const BACKLOG_RUNNER_ROLES = [...BACKLOG_IMPLEMENTATION_RUNNER_ROLES, 'planner', ...BACKLOG_DISCOVERY_PASSES] as const;
+export const BACKLOG_RUNNER_ROLES = [...BACKLOG_IMPLEMENTATION_RUNNER_ROLES, 'planner'] as const;
 export type BacklogRunnerRole = typeof BACKLOG_RUNNER_ROLES[number];
 export type BacklogTaskPriority = 'high' | 'normal' | 'low';
 export type BacklogTaskState = 'planned' | 'ready' | 'done' | 'failed' | 'superseded';
@@ -20,6 +19,42 @@ export type BacklogWorkerResultKind =
   | 'released'
   | 'rate_limited'
   | 'no_progress';
+
+export interface BacklogPassRunnerConfig {
+  tool: BacklogTool;
+  model?: string;
+}
+
+export interface BacklogPassHeuristicsInput {
+  includePaths?: string[];
+  excludePaths?: string[];
+  capabilities?: string[];
+}
+
+export interface BacklogPassHeuristics {
+  includePaths: string[];
+  excludePaths: string[];
+  capabilities: string[];
+}
+
+export interface BacklogPassConfigInput {
+  kind: BacklogPassKind;
+  enabled?: boolean;
+  description?: string;
+  promptFile: string;
+  runner?: BacklogPassRunnerConfig;
+  heuristics?: BacklogPassHeuristicsInput;
+}
+
+export interface BacklogPassConfig {
+  id: string;
+  kind: BacklogPassKind;
+  enabled: boolean;
+  description?: string;
+  promptFile: string;
+  runner?: BacklogPassRunnerConfig;
+  heuristics: BacklogPassHeuristics;
+}
 
 export interface BacklogRunnerConfigInput {
   projectRoot?: string;
@@ -41,10 +76,6 @@ export interface BacklogRunnerConfigInput {
   prompts: {
     agent: string;
     planner?: string;
-    product: string;
-    interface: string;
-    ux: string;
-    code: string;
   };
   validationCommand: string;
   validationProfiles?: Record<string, string>;
@@ -66,7 +97,7 @@ export interface BacklogRunnerConfigInput {
     passes?: boolean;
     worktrees?: boolean;
   };
-  passes?: Partial<Record<BacklogPassType, { promptFile?: string }>>;
+  passes?: Record<string, BacklogPassConfigInput>;
 }
 
 export interface BacklogRunnerConfig {
@@ -86,7 +117,10 @@ export interface BacklogRunnerConfig {
     runtimeDir: string;
     locksDir: string;
   };
-  prompts: Record<BacklogPassType | 'agent' | 'planner', string>;
+  prompts: {
+    agent: string;
+    planner: string;
+  };
   validationCommand: string;
   validationProfiles: Record<string, string>;
   heuristics: {
@@ -107,7 +141,7 @@ export interface BacklogRunnerConfig {
     passes: boolean;
     worktrees: boolean;
   };
-  passes: Record<BacklogPassType, { promptFile: string }>;
+  passes: Record<string, BacklogPassConfig>;
 }
 
 export interface RunOverrides {
@@ -233,10 +267,26 @@ export interface BacklogTaskSpec {
   statusNotes: string[];
   state: BacklogTaskState;
   acceptanceCriteria: string[];
-  source: 'product-pass' | 'interface-pass' | 'ux-pass' | 'code-pass' | 'task-followup' | 'planner-pass' | 'manual';
+  source: BacklogTaskSource;
   createdAt: string;
   updatedAt: string;
 }
+
+export type BacklogPassTaskSource = {
+  type: 'pass';
+  passId: string;
+};
+
+export type BacklogTaskSource =
+  | BacklogPassTaskSource
+  | { type: 'task-followup' }
+  | { type: 'planner-pass' }
+  | { type: 'manual' };
+
+export type BacklogCandidateSource =
+  | BacklogPassTaskSource
+  | { type: 'task-followup' }
+  | { type: 'manual' };
 
 export interface BacklogCandidateRecord {
   title: string;
@@ -247,7 +297,7 @@ export interface BacklogCandidateRecord {
   validationProfile?: string;
   capabilities?: string[];
   context?: string;
-  source: Extract<BacklogTaskSpec['source'], 'product-pass' | 'interface-pass' | 'ux-pass' | 'code-pass' | 'task-followup' | 'manual'>;
+  source: BacklogCandidateSource;
 }
 
 export interface PlannerTaskChild {
@@ -423,7 +473,7 @@ export interface OrchestratorRuntimeStatus {
   requestedWorkers: number;
   effectiveWorkers: number;
   activeTaskWorkers: Array<{ taskId: string; title: string }>;
-  activeControlWorker?: { kind: 'planner' | 'discovery'; passType?: BacklogPassType };
+  activeControlWorker?: { kind: 'planner' | 'discovery'; passId?: string };
   shutdownRequested: boolean;
   pollIntervalMs: number;
   updatedAt: string;

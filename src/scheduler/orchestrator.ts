@@ -8,7 +8,6 @@ import { createCommandRunner, sleep as defaultSleep } from '../process.js';
 import { createFileBackedTaskStore } from '../store/task-store.js';
 import { fileExists, isPidAlive } from '../utils.js';
 import type {
-  BacklogPassType,
   BacklogRunnerConfig,
   BacklogStore,
   BacklogSyncResult,
@@ -43,7 +42,7 @@ type ActiveControlWorker = {
   kind: 'planner' | 'discovery';
   promise: Promise<BacklogWorkerResult>;
   batchKey?: string;
-  passType?: BacklogPassType;
+  passId?: string;
   discoveryMode?: DiscoveryLaunchMode;
 };
 
@@ -368,7 +367,7 @@ export async function runBacklogRunner(
       activeControlWorker: controlWorker
         ? controlWorker.kind === 'planner'
           ? { kind: 'planner' }
-          : { kind: 'discovery', passType: controlWorker.passType }
+          : { kind: 'discovery', passId: controlWorker.passId }
         : undefined,
       shutdownRequested: stopRequested || fatalError !== null,
       pollIntervalMs: ORCHESTRATOR_POLL_INTERVAL_MS,
@@ -495,7 +494,7 @@ export async function runBacklogRunner(
       logger,
       options,
       sleep,
-      (passType) => { if (controlWorker) controlWorker.passType = passType; },
+      (passId) => { if (controlWorker) controlWorker.passId = passId; },
     )
       .then(result => {
         handleControlWorkerResult('discovery', undefined, result, discoveryMode);

@@ -270,7 +270,7 @@ If this work reveals another backlog item or context that a later run should kee
 ${path.posix.normalize(path.relative(cwd, config.files.candidateQueue).split(path.sep).join('/'))}
 
 Schema:
-{"title":"Standalone backlog item title","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context for the future run","source":"task-followup"}
+{"title":"Standalone backlog item title","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context for the future run","source":{"type":"task-followup"}}
 
 ## Stop Rules
 - Do not modify backlog.md directly; it is generated from backlog/tasks.
@@ -366,6 +366,7 @@ export async function buildReconciliationContext(
 
 export async function buildDiscoveryContext(
   config: BacklogRunnerConfig,
+  passId: string,
 ): Promise<string> {
   const [patternsContent, recent, backlogContent] = await Promise.all([
     readFileIfExists(config.files.patterns, ''),
@@ -373,6 +374,18 @@ export async function buildDiscoveryContext(
     readFileIfExists(config.files.backlog, 'Backlog unavailable.'),
   ]);
   const keywords = keywordSetForDiscovery(backlogContent);
+  const currentPass = config.passes[passId];
+  const otherPasses = Object.values(config.passes)
+    .filter(pass => pass.id !== passId && pass.enabled)
+    .map(pass => `- ${pass.id}${pass.description ? `: ${pass.description}` : ''}`)
+    .join('\n') || '- None';
+  const heuristics = currentPass
+    ? [
+        `Include path hints:\n${currentPass.heuristics.includePaths.map(item => `- ${item}`).join('\n') || '- None'}`,
+        `Exclude path hints:\n${currentPass.heuristics.excludePaths.map(item => `- ${item}`).join('\n') || '- None'}`,
+        `Capability hints:\n${currentPass.heuristics.capabilities.map(item => `- ${item}`).join('\n') || '- None'}`,
+      ].join('\n\n')
+    : 'No current pass metadata available.';
 
   return `## Relevant Patterns
 ${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
@@ -383,8 +396,17 @@ ${recent}
 ## Backlog Digest
 ${renderBacklogDigest(backlogContent)}
 
+## Current Discovery Pass
+Pass id: ${currentPass?.id ?? passId}
+Description: ${currentPass?.description ?? 'None'}
+
+${heuristics}
+
+## Other Configured Discovery Passes
+${otherPasses}
+
 ## Planner Flow
-Discovery passes write structured JSONL candidate records to backlog/inbox.jsonl.
+Configured discovery passes write structured JSONL candidate records to backlog/inbox.jsonl.
 The planner step converts those entries into backlog/tasks/**/*.yaml and only runnable task specs are eligible for execution.
 Do not modify backlog.md directly.`;
 }

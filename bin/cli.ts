@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { promptForStartOverrides, shouldPromptInteractively } from './interactive.js';
+import { runPassCommand, runSetupCommand } from './setup-command.js';
 import {
   parseCliCommand,
   renderCommandHelp,
@@ -29,6 +30,8 @@ type CliDependencies = {
   isInteractive: () => boolean;
   confirmLiveOrchestratorTakeover: (error: LiveOrchestratorError) => Promise<boolean>;
   initBacklogRunner: (targetDir: string, options?: { cwd?: string; force?: boolean }) => Promise<string[]>;
+  runSetupCommand: (configPath: string, cwd: string, options: { yes: boolean; agentic: boolean }) => Promise<string[]>;
+  runPassCommand: (configPath: string, config: BacklogRunnerConfig, action: 'list' | 'add' | 'remove' | 'enable' | 'disable', passId?: string) => Promise<string[]>;
   loadConfig: (configPath: string) => Promise<BacklogRunnerConfig>;
   runBacklogRunner: (config: BacklogRunnerConfig, overrides: RunOverrides) => Promise<void>;
   syncBacklogRunner: (config: BacklogRunnerConfig) => Promise<BacklogSyncResult>;
@@ -52,6 +55,8 @@ const defaultDependencies: CliDependencies = {
   isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
   confirmLiveOrchestratorTakeover,
   initBacklogRunner,
+  runSetupCommand,
+  runPassCommand,
   loadConfig: loadBacklogRunnerConfig,
   runBacklogRunner,
   syncBacklogRunner,
@@ -95,7 +100,7 @@ function renderStatus(writer: CliWriter, status: BacklogRunnerStatus, verbose: b
     );
     writeLine(
       writer,
-      `Active control worker: ${orchestrator.activeControlWorker ? orchestrator.activeControlWorker.kind === 'discovery' ? `discovery${orchestrator.activeControlWorker.passType ? `:${orchestrator.activeControlWorker.passType}` : ''}` : 'planner' : 'none'}`,
+      `Active control worker: ${orchestrator.activeControlWorker ? orchestrator.activeControlWorker.kind === 'discovery' ? `discovery${orchestrator.activeControlWorker.passId ? `:${orchestrator.activeControlWorker.passId}` : ''}` : 'planner' : 'none'}`,
     );
   } else {
     writeLine(writer, 'Orchestrator: idle');
@@ -179,7 +184,26 @@ export async function runCli(
       return 0;
     }
 
+    if (parsed.command === 'setup') {
+      const messages = await deps.runSetupCommand(parsed.configPath, deps.cwd(), {
+        yes: parsed.yes,
+        agentic: parsed.agentic,
+      });
+      for (const message of messages) {
+        writeLine(stdout, message);
+      }
+      return 0;
+    }
+
     const config = await deps.loadConfig(parsed.configPath);
+
+    if (parsed.command === 'pass') {
+      const messages = await deps.runPassCommand(parsed.configPath, config, parsed.action, parsed.passId);
+      for (const message of messages) {
+        writeLine(stdout, message);
+      }
+      return 0;
+    }
 
     if (parsed.command === 'sync') {
       const result = await deps.syncBacklogRunner(config);

@@ -4,18 +4,32 @@ import path from 'node:path';
 import YAML from 'yaml';
 import type {
   BacklogCandidateRecord,
+  BacklogCandidateSource,
   BacklogExecutionDomain,
+  BacklogPassTaskSource,
   BacklogRunnerConfig,
   BacklogTaskKind,
   BacklogTaskPriority,
   BacklogTaskSpec,
   BacklogTaskState,
+  BacklogTaskSource,
   PlannerTaskChild,
 } from './types.js';
 import { normalizeWhitespace } from './utils.js';
 import { touchesDependencyManifest } from './workspace/shared-install.js';
 
 const TASK_FILE_PATTERN = /\.ya?ml$/i;
+const DEFAULT_UI_TOUCH_PATH_SEGMENT_HINTS = [
+  'src/ui/',
+  'src/components/',
+  'src/pages/',
+] as const;
+const DEFAULT_UI_TOUCH_PATH_ROOT_HINTS = [
+  'app/',
+  'apps/web/',
+  'frontend/',
+  'web/',
+] as const;
 
 type TaskSpecFileRecord = {
   filePath: string;
@@ -114,14 +128,27 @@ function normalizeExecutionDomain(value: unknown): BacklogExecutionDomain | unde
   return undefined;
 }
 
+function matchesUiTouchPath(touchPath: string, prefix: string, allowNestedSegments: boolean): boolean {
+  return touchPath === prefix
+    || touchPath.startsWith(prefix)
+    || (allowNestedSegments && touchPath.includes(`/${prefix}`));
+}
+
 function isUiTouchPath(touchPath: string, config?: Pick<BacklogRunnerConfig, 'heuristics'>): boolean {
+  if (DEFAULT_UI_TOUCH_PATH_SEGMENT_HINTS.some(prefix => matchesUiTouchPath(touchPath, prefix, true))) {
+    return true;
+  }
+  if (DEFAULT_UI_TOUCH_PATH_ROOT_HINTS.some(prefix => matchesUiTouchPath(touchPath, prefix, false))) {
+    return true;
+  }
+
   const prefixes = config?.heuristics.uiPathPrefixes ?? [];
-  return prefixes.some(prefix => touchPath === prefix || touchPath.startsWith(prefix));
+  return prefixes.some(prefix => matchesUiTouchPath(touchPath, prefix, true));
 }
 
 export function inferExecutionDomain(
   taskKind: BacklogTaskKind,
-  source: BacklogTaskSpec['source'],
+  _source: BacklogTaskSpec['source'],
   touchPaths: string[],
   explicitDomain?: BacklogExecutionDomain,
   config?: Pick<BacklogRunnerConfig, 'heuristics'>,
@@ -132,16 +159,52 @@ export function inferExecutionDomain(
   if (explicitDomain) {
     return explicitDomain;
   }
-  if (source === 'product-pass' || source === 'interface-pass' || source === 'ux-pass') {
-    return 'ui_ux';
-  }
-  if (source === 'code-pass') {
-    return 'code_logic';
-  }
   if (touchPaths.length > 0 && touchPaths.every(touchPath => isUiTouchPath(touchPath, config))) {
     return 'ui_ux';
   }
   return 'code_logic';
+}
+
+function passTaskSource(passId: string): BacklogPassTaskSource {
+  return {
+    type: 'pass',
+    passId,
+  };
+}
+
+function normalizeTaskSource(value: unknown): BacklogTaskSource | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const type = normalizeWhitespace(String(record.type ?? '')).toLowerCase();
+  if (type === 'pass') {
+    const passId = normalizeWhitespace(String(record.pass_id ?? record.passId ?? '')).toLowerCase();
+    return passId ? passTaskSource(passId) : null;
+  }
+  if (type === 'task-followup' || type === 'planner-pass' || type === 'manual') {
+    return { type };
+  }
+  return null;
+}
+
+function normalizeCandidateSource(value: unknown): BacklogCandidateSource | null {
+  const source = normalizeTaskSource(value);
+  if (!source || source.type === 'planner-pass') {
+    return null;
+  }
+  return source;
+}
+
+function serializeTaskSource(source: BacklogTaskSource): Record<string, string> {
+  if (source.type === 'pass') {
+    return {
+      type: 'pass',
+      pass_id: source.passId,
+    };
+  }
+  return { type: source.type };
 }
 
 function inferValidationProfile(
@@ -216,12 +279,10 @@ export function parseTaskSpec(raw: string, filePath: string): BacklogTaskSpec {
   const acceptanceCriteria = toArray(parsed.acceptance_criteria);
   const createdAt = normalizeWhitespace(String(parsed.created_at ?? ''));
   const updatedAt = normalizeWhitespace(String(parsed.updated_at ?? createdAt));
-  const sourceValue = normalizeWhitespace(String(parsed.source ?? 'manual')).toLowerCase();
-  const validSources = new Set<BacklogTaskSpec['source']>(['product-pass', 'interface-pass', 'ux-pass', 'code-pass', 'task-followup', 'planner-pass', 'manual']);
-  if (!validSources.has(sourceValue as BacklogTaskSpec['source'])) {
-    throw new Error(`Task spec ${filePath} has invalid source: ${sourceValue || '<empty>'}`);
+  const source = normalizeTaskSource(parsed.source ?? { type: 'manual' });
+  if (!source) {
+    throw new Error(`Task spec ${filePath} has invalid source`);
   }
-  const source = sourceValue as BacklogTaskSpec['source'];
   const executionDomain = inferExecutionDomain(
     taskKind,
     source,
@@ -294,7 +355,7 @@ function serializeTaskSpec(task: BacklogTaskSpec): string {
     status_notes: task.statusNotes,
     state: task.state,
     acceptance_criteria: task.acceptanceCriteria,
-    source: task.source,
+    source: serializeTaskSource(task.source),
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   }, { indent: 2, lineWidth: 0 });
@@ -389,7 +450,9 @@ export async function readTaskSpecs(taskSpecsDir: string): Promise<BacklogTaskSp
     store = await inspectTaskSpecStore(taskSpecsDir);
   }
   if (store.duplicateTaskIds.length > 0) {
-    throw new Error(`Duplicate task spec ids found: ${store.duplicateTaskIds.join(', ')}. Run \`pnpm backlog:sync\` to normalize backlog/tasks.`);
+    throw new Error(
+      `Duplicate task spec ids found: ${store.duplicateTaskIds.join(', ')}. Run \`backlog-runner sync\` to normalize backlog/tasks.`,
+    );
   }
   return store.records.map(record => record.task).sort(taskSort);
 }
@@ -421,21 +484,6 @@ function normalizePathArray(value: unknown): string[] | null {
     .map(item => normalizeRepoPath(String(item)))
     .filter(Boolean);
   return normalized.length > 0 ? [...new Set(normalized)] : null;
-}
-
-function normalizeCandidateSource(value: unknown): BacklogCandidateRecord['source'] | null {
-  const normalized = normalizeWhitespace(String(value ?? '')).toLowerCase();
-  if (
-    normalized === 'product-pass' ||
-    normalized === 'interface-pass' ||
-    normalized === 'ux-pass' ||
-    normalized === 'code-pass' ||
-    normalized === 'task-followup' ||
-    normalized === 'manual'
-  ) {
-    return normalized;
-  }
-  return null;
 }
 
 type CandidateParseResult =
@@ -598,7 +646,7 @@ export function createTaskFromPlannerChild(
     ? [...new Set(child.capabilities.map(item => normalizeWhitespace(item).toLowerCase()).filter(Boolean))]
     : inferCapabilities(touchPaths, config);
   const statusNotes = child.context ? [`Context: ${normalizeWhitespace(child.context)}`] : [];
-  const executionDomain = inferExecutionDomain(child.taskKind, 'planner-pass', touchPaths, child.executionDomain, config);
+  const executionDomain = inferExecutionDomain(child.taskKind, { type: 'planner-pass' }, touchPaths, child.executionDomain, config);
   if (child.taskKind === 'implementation' && !executionDomain) {
     return null;
   }
@@ -616,7 +664,7 @@ export function createTaskFromPlannerChild(
     statusNotes,
     state: 'ready',
     acceptanceCriteria,
-    source: 'planner-pass',
+    source: { type: 'planner-pass' },
     createdAt: nowIso,
     updatedAt: nowIso,
   };

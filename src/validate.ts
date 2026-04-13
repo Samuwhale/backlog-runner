@@ -33,6 +33,10 @@ export type ValidateOptions = {
   repairSharedInstall?: boolean;
 };
 
+function configuredPassPromptChecks(config: BacklogRunnerConfig): Array<[string, string]> {
+  return Object.values(config.passes).map(pass => [`${pass.id} discovery pass prompt`, pass.promptFile]);
+}
+
 export async function validateCommandReadiness(
   config: BacklogRunnerConfig,
   commandRunner: CommandRunner = createCommandRunner(),
@@ -167,7 +171,7 @@ export async function validateBacklogState(config: BacklogRunnerConfig): Promise
   }
 
   if (state.taskSpecCount > 0 && !state.generatedReport) {
-    messages.push('  ✗ backlog.md is not the generated task report; run `pnpm backlog:sync` to rebuild it from task specs');
+    messages.push('  ✗ backlog.md is not the generated task report; run `backlog-runner sync` to rebuild it from task specs');
     return { ok: false, messages };
   }
 
@@ -187,7 +191,7 @@ export async function validateBacklogState(config: BacklogRunnerConfig): Promise
   }
 
   if (state.duplicateTaskIds.length > 0) {
-    messages.push(`  ✗ duplicate task spec ids found (${state.duplicateTaskIds.join(', ')}); run \`pnpm backlog:sync\` to normalize backlog/tasks`);
+    messages.push(`  ✗ duplicate task spec ids found (${state.duplicateTaskIds.join(', ')}); run \`backlog-runner sync\` to normalize backlog/tasks`);
     return { ok: false, messages };
   }
 
@@ -205,10 +209,7 @@ export async function validatePromptContracts(config: BacklogRunnerConfig): Prom
   const messages: string[] = [];
   const promptChecks: Array<[string, string]> = [
     ['planner pass prompt', config.prompts.planner],
-    ['product pass prompt', config.prompts.product],
-    ['interface pass prompt', config.prompts.interface],
-    ['ux pass prompt', config.prompts.ux],
-    ['code pass prompt', config.prompts.code],
+    ...configuredPassPromptChecks(config),
   ];
 
   let ok = true;
@@ -229,6 +230,10 @@ export async function validatePromptContracts(config: BacklogRunnerConfig): Prom
     messages.push(label === 'planner pass prompt'
       ? '  ✓ planner pass prompt uses structured refinement instructions'
       : `  ✓ ${label} uses structured candidate queue instructions`);
+  }
+
+  if (configuredPassPromptChecks(config).length === 0) {
+    messages.push('  ⚠ no discovery pass prompts configured; discovery mode will be a no-op');
   }
 
   const agentPrompt = await readFile(config.prompts.agent, 'utf8');
@@ -380,10 +385,7 @@ export async function validateBacklogRunner(
     ['patterns.md', config.files.patterns],
     ['agent prompt', config.prompts.agent],
     ['planner pass prompt', config.prompts.planner],
-    ['product pass prompt', config.prompts.product],
-    ['interface pass prompt', config.prompts.interface],
-    ['ux pass prompt', config.prompts.ux],
-    ['code pass prompt', config.prompts.code],
+    ...configuredPassPromptChecks(config),
   ] as const;
 
   let ok = providerValidations.every(validation => validation.result.ok);
@@ -398,6 +400,10 @@ export async function validateBacklogRunner(
 
   if (config.files.models) {
     messages.push((await fileExists(config.files.models)) ? '  ✓ models.json found' : '  ⚠ models.json not found');
+  }
+
+  if (Object.keys(config.passes).length === 0) {
+    messages.push('  ⚠ no discovery passes configured; start will skip discovery when the queue is idle');
   }
 
   const backlogState = await validateBacklogState(config);

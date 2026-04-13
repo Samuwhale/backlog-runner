@@ -61,7 +61,7 @@ type CandidateRejectLogEntry = {
     execution_domain?: string;
     capabilities?: string[];
     context?: string;
-    source: string;
+    source: BacklogCandidateRecord['source'];
   };
   task_id?: string;
 };
@@ -295,7 +295,7 @@ export class FileBackedTaskStore implements BacklogStore {
             `Shutdown requested: ${orchestratorStatus.shutdownRequested ? 'yes' : 'no'}`,
             `Poll interval: ${Math.floor(orchestratorStatus.pollIntervalMs / 1000)}s`,
             `Active task workers: ${orchestratorStatus.activeTaskWorkers.length === 0 ? 'none' : orchestratorStatus.activeTaskWorkers.map(worker => `${worker.title} (${worker.taskId})`).join(' · ')}`,
-            `Active control worker: ${orchestratorStatus.activeControlWorker ? orchestratorStatus.activeControlWorker.kind === 'discovery' ? `discovery${orchestratorStatus.activeControlWorker.passType ? `:${orchestratorStatus.activeControlWorker.passType}` : ''}` : 'planner' : 'none'}`,
+            `Active control worker: ${orchestratorStatus.activeControlWorker ? orchestratorStatus.activeControlWorker.kind === 'discovery' ? `discovery${orchestratorStatus.activeControlWorker.passId ? `:${orchestratorStatus.activeControlWorker.passId}` : ''}` : 'planner' : 'none'}`,
           ]
         : []),
       '',

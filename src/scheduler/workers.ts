@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { createAgentTranscriptRecorder } from '../agent-progress.js';
+import { resolveModelAlias } from '../config.js';
 import { buildDiscoveryContext, buildExecutionContext, buildPlannerContext } from '../context.js';
 import { normalizePathForGit } from '../git-scope.js';
 import type { RunnerLogger } from '../logger.js';
@@ -10,7 +11,6 @@ import { JSON_SCHEMA } from '../providers/common.js';
 import { normalizeWhitespace } from '../utils.js';
 import type {
   AgentResult,
-  BacklogPassType,
   BacklogRunnerConfig,
   BacklogStore,
   BacklogTaskClaim,
@@ -20,7 +20,6 @@ import type {
   WorkspaceSession,
   WorkspaceStrategy,
 } from '../types.js';
-import { BACKLOG_DISCOVERY_PASSES } from '../types.js';
 import {
   MAIN_REPO_INSTALL_REQUIRED_CODE,
   containsSharedInstallPolicyCode,
@@ -67,37 +66,45 @@ async function runSingleDiscoveryPass(
   commandRunner: CommandRunner,
   logger: RunnerLogger,
   options: ResolvedRunOptions,
-  passType: BacklogPassType,
+  passId: string,
   sleep?: (ms: number) => Promise<void>,
 ): Promise<BacklogWorkerResult> {
   const startedAt = Date.now();
+  const pass = config.passes[passId];
+  if (!pass) {
+    return genericWorkerResult('no_progress', startedAt, { note: `missing configured pass: ${passId}` });
+  }
   logger.line('');
   logger.line('================================================================');
-  logger.line(`  ★ Maintenance Pass: ${passType}`);
+  logger.line(`  ★ Maintenance Pass: ${passId}`);
   logger.line('================================================================');
 
   const session = await workspaceStrategy.setup();
   try {
     const baselineDirty = new Set(await changedFiles(commandRunner, session.cwd));
-    const context = await buildDiscoveryContext(config);
-    const runner = getRunnerConfig(options, passType);
+    const context = await buildDiscoveryContext(config, passId);
+    const fallbackRunner = getRunnerConfig(options, 'planner');
+    const tool = pass.runner?.tool ?? fallbackRunner.tool;
+    const model = pass.runner?.model
+      ? await resolveModelAlias(config, pass.runner.model, tool)
+      : (pass.runner?.tool && pass.runner.tool !== fallbackRunner.tool ? undefined : fallbackRunner.model);
     const result = await runProvider(commandRunner, {
-      tool: runner.tool,
-      model: runner.model,
+      tool,
+      model,
       context,
-      prompt: await readPrompt(config.passes[passType].promptFile),
+      prompt: await readPrompt(pass.promptFile),
       cwd: session.cwd,
       maxTurns: 50,
       schema: JSON_SCHEMA,
     });
 
     if (result.status === 'failed') {
-      logger.line(`  ✗ ${passType} pass failed: ${result.item}`);
+      logger.line(`  ✗ ${passId} pass failed: ${result.item}`);
       if (result.note) logger.line(`    ${result.note}`);
       return genericWorkerResult('no_progress', startedAt, { note: result.note || 'agent reported failure' });
     }
 
-    logger.line(`  ✓ ${passType} pass: ${result.item}`);
+    logger.line(`  ✓ ${passId} pass: ${result.item}`);
     if (result.note) logger.line(`    ${result.note}`);
 
     const workspaceCheck = await validateWorkspaceScopeDelta(
@@ -116,25 +123,25 @@ async function runSingleDiscoveryPass(
       return genericWorkerResult('no_progress', startedAt, { note: workspaceCheck.reason });
     }
 
-    const commitMessage = `chore(backlog): ${passType} pass – ${result.item || 'maintenance'}`;
+    const commitMessage = `chore(backlog): ${passId} pass – ${result.item || 'maintenance'}`;
     let persisted = false;
     await withLock(lockPath(config, 'git'), 30, async () => {
       const mergeResult = await session.merge();
       if (!mergeResult.ok) {
-        logger.line(`  ✗ ${passType} pass merge failed: ${mergeResult.reason ?? 'unknown'}`);
+        logger.line(`  ✗ ${passId} pass merge failed: ${mergeResult.reason ?? 'unknown'}`);
         return;
       }
 
       logDrainResult(logger, 'Candidate planner', await store.drainCandidateQueue());
       const finalizeResult = await workspaceStrategy.commitAndPush(commitMessage, bookkeepingPaths(config), { sleep });
       if (!finalizeResult.ok) {
-        logger.line(`  ✗ ${passType} pass finalize failed: ${finalizeResult.reason ?? 'unknown'}`);
+        logger.line(`  ✗ ${passId} pass finalize failed: ${finalizeResult.reason ?? 'unknown'}`);
         return;
       }
       persisted = true;
     });
     if (!persisted) {
-      return genericWorkerResult('no_progress', startedAt, { note: `${passType} pass succeeded but persistence failed` });
+      return genericWorkerResult('no_progress', startedAt, { note: `${passId} pass succeeded but persistence failed` });
     }
     return genericWorkerResult('completed', startedAt);
   } catch (error) {
@@ -143,10 +150,10 @@ async function runSingleDiscoveryPass(
       throw new Error('Authentication/permission error — check your API key and tool setup');
     }
     if (classified.kind === 'rate_limited') {
-      logger.line(`  ⚠ Rate limit hit during ${passType} pass — skipping`);
+      logger.line(`  ⚠ Rate limit hit during ${passId} pass — skipping`);
       return genericWorkerResult('rate_limited', startedAt, { note: classified.message });
     }
-    logger.line(`  · ${passType} pass skipped — ${classified.message}`);
+    logger.line(`  · ${passId} pass skipped — ${classified.message}`);
     return genericWorkerResult('no_progress', startedAt, { note: classified.message });
   } finally {
     await session.teardown();
@@ -161,13 +168,19 @@ export async function runDiscoveryWorker(
   logger: RunnerLogger,
   options: ResolvedRunOptions,
   sleep?: (ms: number) => Promise<void>,
-  onPassStart?: (passType: BacklogPassType) => void,
+  onPassStart?: (passId: string) => void,
 ): Promise<BacklogWorkerResult> {
   const startedAt = Date.now();
   const before = await store.getQueueCounts();
-  for (const passType of BACKLOG_DISCOVERY_PASSES) {
-    onPassStart?.(passType);
-    const result = await runSingleDiscoveryPass(config, store, workspaceStrategy, commandRunner, logger, options, passType, sleep);
+  const enabledPassIds = Object.values(config.passes)
+    .filter(pass => pass.enabled && pass.kind === 'discovery')
+    .map(pass => pass.id);
+  if (enabledPassIds.length === 0) {
+    return genericWorkerResult('no_progress', startedAt, { note: 'no enabled discovery passes configured' });
+  }
+  for (const passId of enabledPassIds) {
+    onPassStart?.(passId);
+    const result = await runSingleDiscoveryPass(config, store, workspaceStrategy, commandRunner, logger, options, passId, sleep);
     if (result.kind === 'rate_limited') {
       return genericWorkerResult('rate_limited', startedAt, { note: result.note });
     }

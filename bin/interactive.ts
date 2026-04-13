@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import type { BacklogRunnerConfig, BacklogRunnerRole, BacklogTool, RunOverrides } from '../src/types.js';
 
 const TOOLS: BacklogTool[] = ['claude', 'codex'];
-const RUNNER_ROLES: BacklogRunnerRole[] = ['taskUi', 'taskCode', 'planner', 'product', 'interface', 'ux', 'code'];
+const RUNNER_ROLES: BacklogRunnerRole[] = ['taskUi', 'taskCode', 'planner'];
 const MAX_INTERACTIVE_WORKERS = 8;
 const SUMMARY_DIVIDER = '----------------------------------------';
 const RUNNER_ROLE_WIDTH = 9;
@@ -91,14 +91,6 @@ function roleLabel(role: BacklogRunnerRole): string {
       return 'Code/logic implementation runner';
     case 'planner':
       return 'Planner runner';
-    case 'product':
-      return 'Product pass runner';
-    case 'interface':
-      return 'Interface pass runner';
-    case 'ux':
-      return 'UX pass runner';
-    case 'code':
-      return 'Code pass runner';
   }
 }
 

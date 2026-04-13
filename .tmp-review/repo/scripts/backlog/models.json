@@ -1,0 +1,16 @@
+{
+  "aliases": {
+    "default": {
+      "claude": "claude-opus-4-6",
+      "codex": "gpt-5.4"
+    },
+    "sonnet": {
+      "claude": "claude-sonnet-4-6",
+      "codex": "gpt-5.4"
+    },
+    "opus": {
+      "claude": "claude-opus-4-6",
+      "codex": "gpt-5.4"
+    }
+  }
+}
