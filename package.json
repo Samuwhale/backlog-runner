@@ -1,0 +1,52 @@
+{
+  "name": "backlog-runner",
+  "version": "0.1.0",
+  "description": "Autonomous backlog orchestration for agentic software workflows",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "backlog-runner": "./dist/bin/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "require": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch bin/cli.ts",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "agents",
+    "automation",
+    "backlog",
+    "claude",
+    "codex",
+    "orchestration"
+  ],
+  "author": "Samuel",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
