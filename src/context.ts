@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { plannerBatchSize, plannerContextForTasks } from './planner.js';
-import { inspectTaskSpecStore } from './task-specs.js';
+import { inspectTaskSpecStore, taskSort } from './task-specs.js';
 import type { BacklogRunnerConfig, BacklogTaskClaim, BacklogTaskSpec, TaskDependencySnapshot, TaskReservationSnapshot } from './types.js';
 import { readFileIfExists } from './utils.js';
 
@@ -20,10 +20,9 @@ type PatternEntry = {
   index: number;
 };
 
-type BacklogTaskRecord = {
-  status: 'open' | 'in-progress' | 'done' | 'failed';
-  title: string;
-};
+function repoRelativeConfigPath(config: BacklogRunnerConfig, absolutePath: string): string {
+  return path.posix.normalize(path.relative(config.projectRoot, absolutePath).split(path.sep).join('/'));
+}
 
 function trimToBudget(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -67,6 +66,22 @@ function keywordSetForDiscovery(backlogContent: string): Set<string> {
   }
   for (const match of backlogContent.matchAll(/^- \[[ ~x!]\]\s+(.+)$/gm)) {
     addWords(keywords, match[1] ?? '');
+  }
+  return keywords;
+}
+
+function keywordSetForBacklogTasks(tasks: BacklogTaskSpec[]): Set<string> {
+  const keywords = new Set<string>();
+  for (const task of tasks) {
+    addWords(keywords, task.title);
+    addWords(keywords, task.validationProfile);
+    for (const note of task.statusNotes) addWords(keywords, note);
+    for (const criterion of task.acceptanceCriteria) addWords(keywords, criterion);
+    for (const capability of task.capabilities) addWords(keywords, capability);
+    for (const touchPath of task.touchPaths) {
+      addWords(keywords, touchPath);
+      addWords(keywords, path.posix.basename(touchPath));
+    }
   }
   return keywords;
 }
@@ -153,45 +168,34 @@ async function readRecentSections(progressFile: string, maxSections: number, max
   return trimToBudget(sections.slice(-maxSections).join('\n\n'), maxChars);
 }
 
-function parseBacklogTasks(content: string): BacklogTaskRecord[] {
-  const tasks: BacklogTaskRecord[] = [];
-
-  for (const line of content.replace(/\r\n/g, '\n').split('\n')) {
-    const task = line.match(/^- \[([ ~x!])\]\s+(.+)$/);
-    if (!task) continue;
-    const marker = task[1] ?? ' ';
-    tasks.push({
-      status: marker === 'x' ? 'done' : marker === '!' ? 'failed' : marker === '~' ? 'in-progress' : 'open',
-      title: task[2] ?? '',
-    });
-  }
-
-  return tasks;
+function renderTaskDigestLabel(task: BacklogTaskSpec): string {
+  const prefix = task.priority === 'high' ? '[HIGH] ' : '';
+  return `- [${task.state}] ${prefix}${task.title}`;
 }
 
-function renderBacklogDigest(content: string): string {
-  const tasks = parseBacklogTasks(content);
+function renderBacklogDigest(tasks: BacklogTaskSpec[], fallbackContent: string): string {
   if (tasks.length === 0) {
-    const trimmed = content.trim();
+    const trimmed = fallbackContent.trim();
     return trimmed ? trimToBudget(trimmed, BACKLOG_CHAR_BUDGET) : 'Backlog unavailable.';
   }
 
   const counts = {
-    open: tasks.filter(task => task.status === 'open').length,
-    inProgress: tasks.filter(task => task.status === 'in-progress').length,
-    done: tasks.filter(task => task.status === 'done').length,
-    failed: tasks.filter(task => task.status === 'failed').length,
+    ready: tasks.filter(task => task.state === 'ready').length,
+    planned: tasks.filter(task => task.state === 'planned').length,
+    failed: tasks.filter(task => task.state === 'failed').length,
+    done: tasks.filter(task => task.state === 'done').length,
   };
-  const openItems = tasks
-    .filter(task => task.status === 'open' || task.status === 'in-progress')
+  const actionableItems = tasks
+    .filter(task => task.state === 'ready' || task.state === 'planned' || task.state === 'failed')
+    .sort(taskSort)
     .slice(0, BACKLOG_ITEM_LIMIT)
-    .map(task => `- [${task.status === 'in-progress' ? '~' : ' '}] ${task.title}`);
+    .map(renderTaskDigestLabel);
 
   const summaryLines = [
-    `Queue summary: ${counts.open} open · ${counts.inProgress} in-progress · ${counts.done} done · ${counts.failed} failed`,
+    `Queue summary: ${counts.ready} ready · ${counts.planned} planned · ${counts.failed} failed · ${counts.done} done`,
     '',
-    'Top open items:',
-    ...(openItems.length > 0 ? openItems : ['- None']),
+    'Top actionable items:',
+    ...(actionableItems.length > 0 ? actionableItems : ['- None']),
   ];
 
   if (tasks.length > BACKLOG_ITEM_LIMIT) {
@@ -200,9 +204,31 @@ function renderBacklogDigest(content: string): string {
   return trimToBudget(summaryLines.join('\n'), BACKLOG_CHAR_BUDGET);
 }
 
+async function loadBacklogDigestState(config: BacklogRunnerConfig): Promise<{ digest: string; keywords: Set<string> }> {
+  const [backlogContent, taskSpecStore] = await Promise.all([
+    readFileIfExists(config.files.backlog, 'Backlog unavailable.'),
+    inspectTaskSpecStore(config.files.taskSpecsDir),
+  ]);
+  const tasks = taskSpecStore.records
+    .map(record => record.task)
+    .filter(task => task.state !== 'superseded')
+    .sort(taskSort);
+
+  if (tasks.length === 0) {
+    return {
+      digest: renderBacklogDigest([], backlogContent),
+      keywords: keywordSetForDiscovery(backlogContent),
+    };
+  }
+
+  return {
+    digest: renderBacklogDigest(tasks, backlogContent),
+    keywords: keywordSetForBacklogTasks(tasks),
+  };
+}
+
 export async function buildExecutionContext(
   config: BacklogRunnerConfig,
-  cwd: string,
   claim: BacklogTaskClaim,
   dependencies: TaskDependencySnapshot[],
   reservations: TaskReservationSnapshot[],
@@ -267,13 +293,13 @@ Use smaller targeted checks while you work. Do not rerun the full final validati
 
 ## Candidate Queue
 If this work reveals another backlog item or context that a later run should keep, append one JSON object per line to:
-${path.posix.normalize(path.relative(cwd, config.files.candidateQueue).split(path.sep).join('/'))}
+${repoRelativeConfigPath(config, config.files.candidateQueue)}
 
 Schema:
 {"title":"Standalone backlog item title","priority":"high|normal|low","touch_paths":["repo/path"],"acceptance_criteria":["Concrete completion check"],"execution_domain":"ui_ux|code_logic","validation_profile":"optional","capabilities":["optional"],"context":"Optional concise context for the future run","source":{"type":"task-followup"}}
 
 ## Stop Rules
-- Do not modify backlog.md directly; it is generated from backlog/tasks.
+- Do not modify backlog.md directly; it is generated from ${repoRelativeConfigPath(config, config.files.taskSpecsDir)}.
 - Start from the declared touch_paths, but broaden the edit set when adjacent changes are required to satisfy the task coherently.
 - Do not start adjacent cleanup just because it is nearby; adjacent discoveries become follow-up tasks.
 - Do not change another active task's reserved files or subsystem surface.
@@ -286,7 +312,6 @@ function renderPathList(items: string[]): string {
 
 export async function buildWorkspaceRepairContext(
   config: BacklogRunnerConfig,
-  cwd: string,
   claim: BacklogTaskClaim,
   dependencies: TaskDependencySnapshot[],
   reservations: TaskReservationSnapshot[],
@@ -301,7 +326,7 @@ export async function buildWorkspaceRepairContext(
     originalDiff?: string;
   },
 ): Promise<string> {
-  const base = await buildExecutionContext(config, cwd, claim, dependencies, reservations);
+  const base = await buildExecutionContext(config, claim, dependencies, reservations);
   const trimmedDiff = options.originalDiff
     ? trimToBudget(options.originalDiff, 12_000)
     : null;
@@ -346,14 +371,13 @@ ${trimmedDiff}
 
 export async function buildReconciliationContext(
   config: BacklogRunnerConfig,
-  cwd: string,
   claim: BacklogTaskClaim,
   dependencies: TaskDependencySnapshot[],
   reservations: TaskReservationSnapshot[],
   failureReason: string,
   originalDiff: string,
 ): Promise<string> {
-  return buildWorkspaceRepairContext(config, cwd, claim, dependencies, reservations, {
+  return buildWorkspaceRepairContext(config, claim, dependencies, reservations, {
     failureReason,
     mode: 'finalize',
     changedFiles: [],
@@ -368,12 +392,12 @@ export async function buildDiscoveryContext(
   config: BacklogRunnerConfig,
   passId: string,
 ): Promise<string> {
-  const [patternsContent, recent, backlogContent] = await Promise.all([
+  const [patternsContent, recent, backlogState] = await Promise.all([
     readFileIfExists(config.files.patterns, ''),
     readRecentSections(config.files.progress, DISCOVERY_PROGRESS_SECTIONS, DISCOVERY_PROGRESS_CHARS),
-    readFileIfExists(config.files.backlog, 'Backlog unavailable.'),
+    loadBacklogDigestState(config),
   ]);
-  const keywords = keywordSetForDiscovery(backlogContent);
+  const keywords = backlogState.keywords;
   const currentPass = config.passes[passId];
   const otherPasses = Object.values(config.passes)
     .filter(pass => pass.id !== passId && pass.enabled)
@@ -394,7 +418,7 @@ ${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
 ${recent}
 
 ## Backlog Digest
-${renderBacklogDigest(backlogContent)}
+${backlogState.digest}
 
 ## Current Discovery Pass
 Pass id: ${currentPass?.id ?? passId}
@@ -406,8 +430,8 @@ ${heuristics}
 ${otherPasses}
 
 ## Planner Flow
-Configured discovery passes write structured JSONL candidate records to backlog/inbox.jsonl.
-The planner step converts those entries into backlog/tasks/**/*.yaml and only runnable task specs are eligible for execution.
+Configured discovery passes write structured JSONL candidate records to ${repoRelativeConfigPath(config, config.files.candidateQueue)}.
+The planner step converts those entries into ${repoRelativeConfigPath(config, config.files.taskSpecsDir)}/**/*.yaml and only runnable task specs are eligible for execution.
 Do not modify backlog.md directly.`;
 }
 
@@ -415,12 +439,12 @@ export async function buildPlannerContext(
   config: BacklogRunnerConfig,
   plannerCandidates: BacklogTaskSpec[],
 ): Promise<string> {
-  const [patternsContent, recent, backlogContent] = await Promise.all([
+  const [patternsContent, recent, backlogState] = await Promise.all([
     readFileIfExists(config.files.patterns, ''),
     readRecentSections(config.files.progress, DISCOVERY_PROGRESS_SECTIONS, DISCOVERY_PROGRESS_CHARS),
-    readFileIfExists(config.files.backlog, 'Backlog unavailable.'),
+    loadBacklogDigestState(config),
   ]);
-  const keywords = keywordSetForDiscovery(backlogContent);
+  const keywords = backlogState.keywords;
 
   return `## Relevant Patterns
 ${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
@@ -429,7 +453,7 @@ ${selectPatternDigest(patternsContent, keywords, DISCOVERY_PATTERN_ENTRIES)}
 ${recent}
 
 ## Backlog Digest
-${renderBacklogDigest(backlogContent)}
+${backlogState.digest}
 
 ## Tasks To Refine
 Refine at most ${plannerBatchSize()} planner candidates in this pass.

@@ -10,7 +10,6 @@ import {
   renderTopLevelHelp,
   resolveCommand,
   suggestCommand,
-  type CliCommandName,
 } from './command-helpers.js';
 import { loadBacklogRunnerConfig } from '../src/config.js';
 import { initBacklogRunner } from '../src/init.js';

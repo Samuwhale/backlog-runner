@@ -2,7 +2,6 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AgentResult, AgentRunRequest, BacklogTool, CommandResult, CommandRunner, ToolValidationResult } from '../types.js';
-import { readFileIfExists } from '../utils.js';
 
 export const JSON_SCHEMA = JSON.stringify({
   type: 'object',

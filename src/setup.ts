@@ -532,7 +532,7 @@ export async function ensureScaffoldSupportFiles(projectRoot: string, force: boo
   await copyPromptTemplate('planner.md', path.join(projectRoot, 'scripts', 'backlog', 'planner.md'), force);
 }
 
-export async function writeManagedPassPrompts(projectRoot: string, passes: DiscoveryPassDraft[], force = false): Promise<void> {
+export async function writeManagedPassPrompts(passes: DiscoveryPassDraft[], force = false): Promise<void> {
   for (const pass of passes) {
     if (!pass.managedPrompt) continue;
     await mkdir(path.dirname(pass.promptFile), { recursive: true });
@@ -746,7 +746,7 @@ export async function applySetupResult(
   options: { forceScaffold?: boolean } = {},
 ): Promise<BacklogRunnerConfig> {
   await ensureScaffoldSupportFiles(projectRoot, options.forceScaffold ?? false);
-  await writeManagedPassPrompts(projectRoot, passes, true);
+  await writeManagedPassPrompts(passes, true);
   const config = mergeBaseConfig(projectRoot, existingConfig, passes);
   await writeBacklogRunnerConfig(configPath, config);
   await syncBacklogRunner(config);
@@ -757,7 +757,7 @@ export async function addPassToConfig(configPath: string, config: BacklogRunnerC
   if (config.passes[draft.id]) {
     throw new Error(`Pass '${draft.id}' already exists.`);
   }
-  await writeManagedPassPrompts(config.projectRoot, [draft], false);
+  await writeManagedPassPrompts([draft], false);
   const nextConfig = mergeBaseConfig(config.projectRoot, config, [
     ...Object.values(config.passes).map(pass => normalizeDraftFromExisting(config.projectRoot, pass)),
     draft,

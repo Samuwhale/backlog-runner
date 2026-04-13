@@ -43,7 +43,6 @@ import {
   taskExecutionPaths,
   taskWorkerResult,
   validateStagedWorkspace,
-  validateWorkspaceScope,
   validateWorkspaceScopeDelta,
   verifyValidationPhase,
 } from './helpers.js';
@@ -393,7 +392,6 @@ async function runTaskExecutionPhase(
   logger.line(`  Execution domain: ${claim.task.executionDomain} via ${executionRole} (${executionRunner.tool}${executionRunner.model ? ` · ${executionRunner.model}` : ''})`);
   const context = await buildExecutionContext(
     config,
-    session.cwd,
     claim,
     await store.getTaskDependencies(claim.task.id),
     await store.getActiveReservations(claim.task.id),

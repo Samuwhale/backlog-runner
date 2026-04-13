@@ -2,8 +2,8 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ensureConfigReady, resolveRunOptions } from '../config.js';
 import { createDefaultLogSink, RunnerLogger } from '../logger.js';
+import { isOrchestratorStatusLive, ORCHESTRATOR_STATUS_FILE } from '../orchestrator-status.js';
 import { plannerBatchSize } from '../planner.js';
-import { isAuthFailure, isRateLimited } from '../providers/common.js';
 import { createCommandRunner, sleep as defaultSleep } from '../process.js';
 import { createFileBackedTaskStore } from '../store/task-store.js';
 import { fileExists, isPidAlive } from '../utils.js';
@@ -36,7 +36,6 @@ const BLOCKED_DISCOVERY_MAX_BACKOFF_MS = 10 * 60 * 1000;
 type DiscoveryLaunchMode = 'empty' | 'blocked';
 const ORCHESTRATOR_TAKEOVER_GRACE_MS = 15_000;
 const ORCHESTRATOR_TAKEOVER_KILL_TIMEOUT_MS = 10_000;
-const ORCHESTRATOR_STALE_THRESHOLD_MS = Math.max(ORCHESTRATOR_POLL_INTERVAL_MS * 5, 30_000);
 
 type ActiveControlWorker = {
   kind: 'planner' | 'discovery';
@@ -77,7 +76,7 @@ function renderLoopSummary(options: {
 async function writeOrchestratorStatus(config: BacklogRunnerConfig, status: OrchestratorRuntimeStatus): Promise<void> {
   try {
     await writeFile(
-      path.join(config.files.runtimeDir, 'orchestrator-status.json'),
+      path.join(config.files.runtimeDir, ORCHESTRATOR_STATUS_FILE),
       `${JSON.stringify(status, null, 2)}\n`,
       'utf8',
     );
@@ -90,7 +89,7 @@ async function writeOrchestratorStatus(config: BacklogRunnerConfig, status: Orch
 
 async function clearOrchestratorStatus(config: BacklogRunnerConfig): Promise<void> {
   try {
-    await rm(path.join(config.files.runtimeDir, 'orchestrator-status.json'), { force: true });
+    await rm(path.join(config.files.runtimeDir, ORCHESTRATOR_STATUS_FILE), { force: true });
   } catch (error) {
     if (!shouldIgnoreOrchestratorStatusError(error)) {
       throw error;
@@ -100,7 +99,7 @@ async function clearOrchestratorStatus(config: BacklogRunnerConfig): Promise<voi
 
 async function readOrchestratorStatus(config: BacklogRunnerConfig): Promise<OrchestratorRuntimeStatus | null> {
   try {
-    const content = await readFile(path.join(config.files.runtimeDir, 'orchestrator-status.json'), 'utf8');
+    const content = await readFile(path.join(config.files.runtimeDir, ORCHESTRATOR_STATUS_FILE), 'utf8');
     return JSON.parse(content) as OrchestratorRuntimeStatus;
   } catch {
     return null;
@@ -113,14 +112,6 @@ function shouldIgnoreOrchestratorStatusError(error: unknown): boolean {
   }
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'ENOENT' || code === 'EINVAL';
-}
-
-function isOrchestratorStatusFresh(status: OrchestratorRuntimeStatus): boolean {
-  const updatedAtMs = Date.parse(status.updatedAt);
-  if (!Number.isFinite(updatedAtMs)) {
-    return false;
-  }
-  return (Date.now() - updatedAtMs) <= ORCHESTRATOR_STALE_THRESHOLD_MS;
 }
 
 export class LiveOrchestratorError extends Error {
@@ -269,7 +260,7 @@ async function ensureOrchestratorAvailable(
   const status = await readOrchestratorStatus(config);
   if (!status) return;
 
-  if (isPidAlive(status.pid) && isOrchestratorStatusFresh(status)) {
+  if (isOrchestratorStatusLive(status)) {
     if (options.takeover) {
       await takeOverLiveOrchestrator(config, logger, status, options.sleep);
       return;

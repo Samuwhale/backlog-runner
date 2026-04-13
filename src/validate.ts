@@ -20,6 +20,9 @@ import {
 const VALIDATION_COMMAND_TIMEOUT_MS = 20 * 60 * 1000;
 const GIT_READINESS_TIMEOUT_MS = 2 * 60 * 1000;
 
+function repoRelativePath(config: BacklogRunnerConfig, targetPath: string): string {
+  return path.posix.normalize(path.relative(config.projectRoot, targetPath).split(path.sep).join('/'));
+}
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -164,9 +167,11 @@ export async function validateBacklogState(config: BacklogRunnerConfig): Promise
   const state = await inspectBacklogState(config);
   const legacyInboxPath = path.join(config.projectRoot, 'backlog-inbox.md');
   const legacyInboxExists = await fileExists(legacyInboxPath);
+  const taskSpecsDir = repoRelativePath(config, config.files.taskSpecsDir);
+  const candidateQueue = repoRelativePath(config, config.files.candidateQueue);
 
   if (state.taskSpecCount === 0 && state.hasLegacyTasks) {
-    messages.push('  ✗ backlog is still in legacy markdown mode; create task specs in backlog/tasks before autonomous runs');
+    messages.push(`  ✗ backlog is still in legacy markdown mode; create task specs in ${taskSpecsDir} before autonomous runs`);
     return { ok: false, messages };
   }
 
@@ -186,12 +191,12 @@ export async function validateBacklogState(config: BacklogRunnerConfig): Promise
   }
 
   if (legacyInboxExists) {
-    messages.push('  ✗ legacy backlog-inbox.md still exists; delete it and use backlog/inbox.jsonl only');
+    messages.push(`  ✗ legacy backlog-inbox.md still exists; delete it and use ${candidateQueue} only`);
     return { ok: false, messages };
   }
 
   if (state.duplicateTaskIds.length > 0) {
-    messages.push(`  ✗ duplicate task spec ids found (${state.duplicateTaskIds.join(', ')}); run \`backlog-runner sync\` to normalize backlog/tasks`);
+    messages.push(`  ✗ duplicate task spec ids found (${state.duplicateTaskIds.join(', ')}); run \`backlog-runner sync\` to normalize ${taskSpecsDir}`);
     return { ok: false, messages };
   }
 

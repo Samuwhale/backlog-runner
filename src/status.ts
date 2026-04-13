@@ -1,9 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { ensureConfigReady } from './config.js';
+import { readLiveOrchestratorStatus } from './orchestrator-status.js';
 import { createFileBackedTaskStore } from './store/task-store.js';
 import type { BacklogQueueCounts, BacklogRunnerConfig, OrchestratorRuntimeStatus } from './types.js';
-import { isPidAlive } from './utils.js';
 
 export interface BacklogRunnerStatus {
   counts: BacklogQueueCounts;
@@ -42,16 +41,6 @@ function readMarkdownSection(markdown: string, heading: string): string[] {
   return section;
 }
 
-async function readOrchestratorStatus(config: BacklogRunnerConfig): Promise<OrchestratorRuntimeStatus | null> {
-  try {
-    const content = await readFile(path.join(config.files.runtimeDir, 'orchestrator-status.json'), 'utf8');
-    const status = JSON.parse(content) as OrchestratorRuntimeStatus;
-    return isPidAlive(status.pid) ? status : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function readBacklogRunnerStatus(config: BacklogRunnerConfig): Promise<BacklogRunnerStatus> {
   await ensureConfigReady(config);
   const store = createFileBackedTaskStore(config);
@@ -59,7 +48,7 @@ export async function readBacklogRunnerStatus(config: BacklogRunnerConfig): Prom
   try {
     const counts = await store.getQueueCounts();
     const [orchestrator, runtimeReport] = await Promise.all([
-      readOrchestratorStatus(config),
+      readLiveOrchestratorStatus(config.files.runtimeDir),
       readFile(config.files.runtimeReport, 'utf8').catch(() => ''),
     ]);
 

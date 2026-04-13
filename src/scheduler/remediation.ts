@@ -112,7 +112,6 @@ export async function attemptWorkspaceRemediation(
   const snapshot = await collectWorkspaceSnapshot(commandRunner, remediation.cwd, remediation.allowedPaths);
   const context = await buildWorkspaceRepairContext(
     config,
-    remediation.cwd,
     claim,
     await store.getTaskDependencies(claim.task.id),
     await store.getActiveReservations(claim.task.id),
@@ -264,7 +263,6 @@ export async function attemptTaskReconciliation(
   try {
     const context = await buildReconciliationContext(
       config,
-      reconciliationCwd,
       claim,
       await store.getTaskDependencies(claim.task.id),
       await store.getActiveReservations(claim.task.id),

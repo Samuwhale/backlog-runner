@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { access, appendFile, readFile, rename, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { lockPath, withLock } from '../locks.js';
+import { readLiveOrchestratorStatus } from '../orchestrator-status.js';
 import { RuntimeStateStore } from '../runtime-state.js';
 import { normalizeWhitespace } from '../utils.js';
 import {
   createTaskFromPlannerChild,
   createTaskFromCandidateDetailed,
-  normalizeRepoPath,
   normalizeTaskSpecStore,
   parseCandidateRecordDetailed,
   readTaskSpecs,
@@ -32,7 +31,6 @@ import type {
   TaskDeferralOptions,
   TaskActivitySnapshot,
   TaskDependencySnapshot,
-  OrchestratorRuntimeStatus,
   TaskLeaseSnapshot,
   TaskReservationSnapshot,
 } from '../types.js';
@@ -117,15 +115,6 @@ function highestPriority(tasks: BacklogTaskSpec[]): BacklogTaskPriority | null {
   return tasks.reduce<BacklogTaskPriority>((current, task) => (
     taskPriorityRank(task.priority) < taskPriorityRank(current) ? task.priority : current
   ), tasks[0]!.priority);
-}
-
-async function readOrchestratorStatus(runtimeDir: string): Promise<OrchestratorRuntimeStatus | null> {
-  try {
-    const content = await readFile(path.join(runtimeDir, 'orchestrator-status.json'), 'utf8');
-    return JSON.parse(content) as OrchestratorRuntimeStatus;
-  } catch {
-    return null;
-  }
 }
 
 export class FileBackedTaskStore implements BacklogStore {
@@ -278,7 +267,7 @@ export class FileBackedTaskStore implements BacklogStore {
   }
 
   private async writeRuntimeReport(snapshot: RuntimeSnapshot): Promise<void> {
-    const orchestratorStatus = await readOrchestratorStatus(this.config.files.runtimeDir);
+    const orchestratorStatus = await readLiveOrchestratorStatus(this.config.files.runtimeDir);
     const plannerCandidates = snapshot.tasks
       .filter(task => task.state === 'planned' || task.state === 'failed')
       .sort(plannerCandidateSort);
