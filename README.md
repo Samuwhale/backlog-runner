@@ -31,6 +31,8 @@ If you want the tool to draft passes for the repo instead of relying only on det
 npx backlog-runner setup --agentic
 ```
 
+`setup --agentic` drafts pass ids, descriptions, heuristics, and runner choices. The runner still writes the managed prompt files itself so the queue/schema contract stays valid.
+
 That creates:
 
 - `backlog.config.mjs`

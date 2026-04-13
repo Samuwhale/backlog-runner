@@ -40,6 +40,22 @@ function configuredPassPromptChecks(config: BacklogRunnerConfig): Array<[string,
   return Object.values(config.passes).map(pass => [`${pass.id} discovery pass prompt`, pass.promptFile]);
 }
 
+function validateDiscoveryPassPromptContent(passId: string, content: string): string | null {
+  if (!content.includes('backlog/inbox.jsonl')) {
+    return 'does not mention backlog/inbox.jsonl';
+  }
+  if (!content.includes('"task_kind":"implementation|research"')) {
+    return 'is missing the task_kind schema';
+  }
+  if (!content.includes(`"source":{"type":"pass","pass_id":"${passId}"}`)) {
+    return 'is missing the structured source schema';
+  }
+  if (!content.includes('{"status":"done"')) {
+    return 'is missing the final JSON return contract';
+  }
+  return null;
+}
+
 export async function validateCommandReadiness(
   config: BacklogRunnerConfig,
   commandRunner: CommandRunner = createCommandRunner(),
@@ -232,9 +248,20 @@ export async function validatePromptContracts(config: BacklogRunnerConfig): Prom
       messages.push(`  ✗ ${label} still references legacy markdown planner output`);
       continue;
     }
-    messages.push(label === 'planner pass prompt'
-      ? '  ✓ planner pass prompt uses structured refinement instructions'
-      : `  ✓ ${label} uses structured candidate queue instructions`);
+    if (label === 'planner pass prompt') {
+      messages.push('  ✓ planner pass prompt uses structured refinement instructions');
+      continue;
+    }
+
+    const passId = label.replace(/ discovery pass prompt$/, '');
+    const promptError = validateDiscoveryPassPromptContent(passId, content);
+    if (promptError) {
+      ok = false;
+      messages.push(`  ✗ ${label} ${promptError}`);
+      continue;
+    }
+
+    messages.push(`  ✓ ${label} uses structured candidate queue instructions`);
   }
 
   if (configuredPassPromptChecks(config).length === 0) {

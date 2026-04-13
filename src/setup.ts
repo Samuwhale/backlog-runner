@@ -196,7 +196,7 @@ function backlogScaffoldGuide(): string {
     '',
     '1. Run `backlog-runner setup --agentic` if you want an agent to draft the initial pass set from the current repo.',
     '2. Edit `backlog.config.mjs` to tune validation, workspace settings, provider selection, and discovery passes.',
-    '3. Edit `scripts/backlog/passes/<pass-id>.md` to define what each discovery pass should look for and how it should write candidates.',
+    '3. Edit `scripts/backlog/passes/<pass-id>.md` to adjust focus and heuristics, but keep the structured candidate queue and return contract intact.',
     '4. Use `backlog-runner pass add <id>` / `remove` / `enable` / `disable` for lightweight pass management.',
     '',
     '## Recommended pattern',
@@ -609,9 +609,8 @@ const AGENTIC_SETUP_SCHEMA = JSON.stringify({
           capabilities: { type: 'array', items: { type: 'string' } },
           runner_tool: { type: ['string', 'null'], enum: ['claude', 'codex', null] },
           runner_model: { type: ['string', 'null'] },
-          prompt: { type: 'string' },
         },
-        required: ['id', 'description', 'include_paths', 'exclude_paths', 'capabilities', 'runner_tool', 'runner_model', 'prompt'],
+        required: ['id', 'description', 'include_paths', 'exclude_paths', 'capabilities', 'runner_tool', 'runner_model'],
         additionalProperties: false,
       },
     },
@@ -647,7 +646,7 @@ async function generateAgenticSetupProposal(
         'Return only supported fields.',
         'Use lowercase kebab-case ids.',
         'Prefer a small pass set that maps cleanly to real repo surfaces or operator concerns.',
-        'Generated prompts should be concise, editable, and optimized for repo-local ownership after setup.',
+        'Do not generate prompt bodies. The runner owns the structured pass prompt template and will derive prompts from the returned metadata.',
         'Focus on normal repo config and prompt files, not custom runtime architecture.',
         'Propose at most 6 passes.',
       ].join('\n'),
@@ -680,9 +679,6 @@ async function generateAgenticSetupProposal(
       const runnerModel = typeof record.runner_model === 'string' && record.runner_model.trim()
         ? record.runner_model.trim()
         : undefined;
-      const prompt = typeof record.prompt === 'string' && record.prompt.trim()
-        ? record.prompt.trim()
-        : buildPassPrompt(id, description, undefined);
       passes.push({
         id,
         enabled: true,
@@ -694,7 +690,11 @@ async function generateAgenticSetupProposal(
         },
         runner: runnerTool ? { tool: runnerTool, model: runnerModel } : undefined,
         promptFile: buildManagedPassPromptPath(projectRoot, id),
-        promptContent: prompt,
+        promptContent: buildPassPrompt(id, description, {
+          includePaths: Array.isArray(record.include_paths) ? record.include_paths.map(String) : [],
+          excludePaths: Array.isArray(record.exclude_paths) ? record.exclude_paths.map(String) : [],
+          capabilities: Array.isArray(record.capabilities) ? record.capabilities.map(String) : [],
+        }),
         managedPrompt: true,
       });
     }
