@@ -172,32 +172,7 @@ function passTaskSource(passId: string): BacklogPassTaskSource {
   };
 }
 
-function normalizeLegacyPassId(value: string): string | null {
-  const normalized = normalizeWhitespace(value).toLowerCase();
-  if (
-    normalized === 'product-pass'
-    || normalized === 'interface-pass'
-    || normalized === 'ux-pass'
-    || normalized === 'code-pass'
-  ) {
-    return normalized;
-  }
-  return null;
-}
-
 function normalizeTaskSource(value: unknown): BacklogTaskSource | null {
-  if (typeof value === 'string') {
-    const normalized = normalizeWhitespace(value).toLowerCase();
-    const legacyPassId = normalizeLegacyPassId(normalized);
-    if (legacyPassId) {
-      return passTaskSource(legacyPassId);
-    }
-    if (normalized === 'task-followup' || normalized === 'planner-pass' || normalized === 'manual') {
-      return { type: normalized };
-    }
-    return null;
-  }
-
   if (!value || typeof value !== 'object') {
     return null;
   }
@@ -206,8 +181,7 @@ function normalizeTaskSource(value: unknown): BacklogTaskSource | null {
   const type = normalizeWhitespace(String(record.type ?? '')).toLowerCase();
   if (type === 'pass') {
     const passId = normalizeWhitespace(String(record.pass_id ?? record.passId ?? '')).toLowerCase();
-    const normalizedPassId = normalizeLegacyPassId(passId) ?? passId;
-    return normalizedPassId ? passTaskSource(normalizedPassId) : null;
+    return passId ? passTaskSource(passId) : null;
   }
   if (type === 'task-followup' || type === 'planner-pass' || type === 'manual') {
     return { type };
@@ -223,18 +197,14 @@ function normalizeCandidateSource(value: unknown): BacklogCandidateSource | null
   return source;
 }
 
-function serializeTaskSource(source: BacklogTaskSource): string | Record<string, string> {
+function serializeTaskSource(source: BacklogTaskSource): Record<string, string> {
   if (source.type === 'pass') {
-    const legacyPassId = normalizeLegacyPassId(source.passId);
-    if (legacyPassId) {
-      return legacyPassId;
-    }
     return {
       type: 'pass',
       pass_id: source.passId,
     };
   }
-  return source.type;
+  return { type: source.type };
 }
 
 function inferValidationProfile(
